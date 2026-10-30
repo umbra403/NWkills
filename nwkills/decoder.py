@@ -19,6 +19,8 @@ PROFILES = {
 def set_profile(p):
     global X328, IA, T5X, STEPINTO
     if isinstance(p, str): p = PROFILES[p]
+    p = dict(p); p.setdefault('S324', 2)
+    W[1] = p['S324']; EXTRA[0x87c324] = p['S324']
     X328 = p['X328']; IA = p['IA']; T5X = p['T5X']; STEPINTO = list(p['STEP'])
     EXTRA[0x87c328] = X328; EXTRA[0x87c32c] = p['S32C']; EXTRA[0x87c330] = p['S330']
 set_profile('nwe')
@@ -61,7 +63,7 @@ KEEP = (5, 6, 13, 18, 28)
 def one(a):
     k, ts, pl = a
     n = pl[7]-1 if len(pl) > 7 else 0
-    rec = dict(i=k, t=ts, L=len(pl)*8, n=n, msgs=[], tail=None, err=None)
+    rec = dict(i=k, t=ts, L=len(pl)*8, n=n, msgs=[], ev=[], txt=[], rst=0, tail=None, err=None)
     pos = 68
     if n > 0:
         try: r, cur, ms = msgs_only(pl)
@@ -70,6 +72,11 @@ def one(a):
         if len(ms) != n: rec['err'] = 'count%d/%d' % (len(ms), n)
         pos = cur
         rec['msgs'] = [(m[2], [v for b, v in m[3]], [b for b, v in m[3]]) for m in ms if m[2] in KEEP]
+        # module script events (message types 36/37/38 with the 107 wrapper): (type, event number, args)
+        # server text lines (type 39) and the same-map reset marker (type 41 with a single 1- or 3-bit field)
+        rec['txt'] = [''.join(chr(v) for b, v in m[3] if b == 8 and 32 <= v < 127) for m in ms if m[2] == 39]
+        rec['rst'] = sum(1 for m in ms if m[2] == 41 and len(m[3]) == 1 and m[3][0][0] in (1, 3))
+        rec['ev'] = [(m[2], m[3][2][1], [v for b, v in m[3][3:]]) for m in ms if m[2] in (36, 37, 38) and len(m[3]) >= 4 and m[3][1][1] == 107]
     t = parse_tail(pl, pos)
     if t is None: rec['err'] = (rec['err'] or '') + 'tail'
     else:
@@ -90,7 +97,7 @@ def calibrate(payloads, log=print, per_type=24):
     for pl in payloads:
         if len(pl) > 12 and 2 <= pl[7] <= 3:
             t = _bits(pl, 68, 6)
-            if t in (5, 6, 7, 20) and len(strata[t]) < per_type: strata[t].append(pl)
+            if t in (5, 6, 7, 15, 20) and len(strata[t]) < per_type: strata[t].append(pl)
     p = dict(PROFILES['nwe'])
     def search(keys, grids, pls):
         if not pls: return
@@ -101,6 +108,7 @@ def calibrate(payloads, log=print, per_type=24):
             if bestv is None or s > bestv[0]: bestv = (s, combo)
         p.update(dict(zip(keys, bestv[1]))); set_profile(p)
         log('  %s = %s  (%d/%d clean)' % (keys, bestv[1], bestv[0], len(pls)))
+    search(['S324'], [range(2, 13)], strata[15])
     search(['S32C'], [range(8, 14)], strata[7])
     search(['S330'], [range(8, 13)], strata[20])
     search(['X328'], [range(8, 14)], strata[6])

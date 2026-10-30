@@ -34,3 +34,34 @@ def lookup(roster, slot, t):
     for x in v:
         if x[0] <= t + 5: cur = x
     return cur[2]
+
+def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0):
+    """Names that were never announced with the usual join record (e.g. you joined later) still show up next to the player id in
+    chat/other records. For slots that need a name, take the printable string that repeats at >=2 separate moments."""
+    need = [s for s in need_slots if s is not None and s >= 0 and s not in roster]
+    if not need: return roster
+    cls = bytes(sorted(set(s + 1 for s in need if s + 1 < 256)))
+    if not cls: return roster
+    pat = re.compile(b'([' + b''.join(b'\\x%02x' % c for c in cls) + b'])([\\x04-\\x28])\\x00', re.S)
+    seen = collections.defaultdict(list)                     # (pid, name) -> times
+    for t, pl in items:
+        if len(pl) < 20: continue
+        done = set()
+        for k in range(8):
+            b = _shift(pl, k)
+            for m in pat.finditer(b):
+                L = m.group(2)[0]; ch = b[m.end():m.end()+L]
+                if len(ch) == L and not ch.translate(None, PRINT):
+                    nm = ch.decode()
+                    if sum(c.isalnum() for c in nm) >= 4 and (m.group(1)[0], nm) not in done:
+                        done.add((m.group(1)[0], nm)); seen[(m.group(1)[0], nm)].append(t)
+    best = {}
+    for (pid, nm), ts in seen.items():
+        ts.sort(); clusters = 1 + sum(1 for a, b in zip(ts, ts[1:]) if b - a > gap)
+        tagged = (' ' not in nm) and len(nm) >= 8 and ('_' in nm or '[' in nm)
+        if clusters >= min_clusters or tagged:
+            sc = (min(clusters, 2) if not tagged else clusters + 1, 1 if tagged else 0, len(ts))
+            if pid not in best or sc > best[pid][0]: best[pid] = (sc, nm, ts[0], ts[-1], len(ts))
+    for pid, (sc, nm, a, b, c) in best.items():
+        roster[pid - 1] = [(a, b, nm, c)]
+    return roster

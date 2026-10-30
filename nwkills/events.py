@@ -1,6 +1,6 @@
 import csv,json,os,collections
-WCODE={20:'artillery: cannonball',21:'artillery: shrapnel/canister',22:'artillery: explosion',17:'melee: bayonet/spear',12:'melee: sword/sabre',5:'firearm: musket/rifle',10:'firearm: pistol',0:'headshot'}
-MAXSLOT=142
+WCODE={2:'self-inflicted? (class 2)',20:'artillery: cannonball',21:'artillery: shrapnel/canister',22:'artillery: explosion',17:'melee: bayonet/spear',12:'melee: sword/sabre',5:'firearm: musket/rifle',10:'firearm: pistol',0:'headshot'}
+MAXSLOT=250
 def load_roster(path):
     r={}
     if path and os.path.exists(path):
@@ -22,7 +22,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
                 hit=f[-1] if ws[-1]==9 else None
                 key=(vic,kil)
                 if last and last[0]==key and t-last[1]<4: last=(key,t); continue
-                last=(key,t); kills.append(dict(t=t,victim=vic,killer=kil,wcode=wc,hit=hit))
+                last=(key,t); kills.append(dict(t=t,victim=vic,killer=kil,wcode=wc,hit=hit,mode=f[3] if len(f)>3 else None,nextra=len(f)-5))
             elif ty==5 and len(f)>20 and f[0]>0:
                 if f[1]-1<=MAXSLOT: owner.append((t,f[0]-1,f[1]-1))
             elif ty==18 and f and f[0]>0: t18.append((t,f[0]-1))
@@ -59,6 +59,8 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
         c=[o for o in owner if o[1]==a and o[0]<t-0.3]
         return c[-1][2] if c else None
     lastv={}; out=[]
+    by_slot=collections.defaultdict(list)
+    for o in owner: by_slot[o[2]].append(o)
     for k in kills:
         t=k['t']; ks=who(k['killer'],t); vs=who(k['victim'],t)
         dl=None
@@ -69,9 +71,14 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
                 if b:
                     dl=w[0]-b[-1]
                     if dl==0: dl=None
+        resp=None
+        if vs is not None and vs>=0:
+            nx=[o[0]-t for o in by_slot.get(vs,[]) if o[0]>t+0.5 and o[1]!=k['victim']]
+            if nx and min(nx)<=120: resp=round(min(nx),1)
         wn=WCODE.get(k['wcode'],'class %d'%k['wcode'])
-        if k['wcode']==0:
+        if k['wcode']==0 and k.get('mode')!=2: wn='no blow (mode %s)'%k.get('mode')
+        elif k['wcode']==0:
             pi=[it for tt,sh,it in miss if sh==k['killer'] and -1.0<t-tt<1.0]
             if pi and items and 0<=pi[0]<len(items): wn+=' ('+items[pi[0]][4:]+')'
-        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if dl is not None and dl<0 else '',killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl))
+        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if dl is not None and dl<0 else '',killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra')))
     return out,local_slot

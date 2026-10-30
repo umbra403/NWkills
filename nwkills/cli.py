@@ -8,6 +8,19 @@ def _work(a):
     from .decoder import one
     return one(a)
 
+def death_type(e, burst=False):
+    """Provisional classification (no ground truth yet for the non-blow kinds).
+    Server-log evidence: a player leaving shows as a killer-less death with weapon code 0 (shown as 'headshot')."""
+    vs, ks = e['victim_slot'], e['killer_slot']
+    if vs is not None and vs < 0: return 'AI/horse death'
+    if e['killer_agent'] is not None and e['killer_agent'] < 0:
+        return 'world (left server/fall)'
+    if ks is not None and ks == vs: return 'self-inflicted (suicide/fall?)'
+    if e.get('mode') != 2:
+        if ks is not None and ks >= 0: return 'kill (no blow detail)'      # known, different killer: a real kill, blow data missing
+        return 'non-blow death (leave/class change?)'
+    return 'kill'
+
 def find_server_flow(pkts, want_port=None):
     from .pcap import parse_udp
     flows = collections.defaultdict(lambda: [0, 0, 0])      # key -> [packets, bytes, header-ok]
@@ -29,8 +42,9 @@ def find_server_flow(pkts, want_port=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Read Mount & Blade: Warband Napoleonic Wars kills from a Wireshark capture (client side).')
-    ap.add_argument('pcap', help='.pcapng captured while you were connected to the server')
-    ap.add_argument('--exe', required=True, help='path to your mb_warband.exe (the game is only read, never modified)')
+    ap.add_argument('pcap', nargs='?', help='.pcapng captured while you were connected to the server')
+    ap.add_argument('--exe', help='path to your mb_warband.exe (optional: remembered after the first-run setup; the game is only read, never modified)')
+    ap.add_argument('--setup', action='store_true', help='run the setup wizard (set or change the saved mb_warband.exe path) and exit')
     ap.add_argument('--out', help='output CSV (default: <pcap>_kills.csv)')
     ap.add_argument('--port', type=int, help='server UDP port (default: auto-detect)')
     ap.add_argument('--me', help='part of your own player name (used as the local player)')
@@ -38,6 +52,16 @@ def main(argv=None):
     ap.add_argument('--cache', help='pickle file to save/reuse decoded packets (re-run the kill logic without re-decoding)')
     ap.add_argument('--limit', type=int, help='only decode the first N packets (test)')
     a = ap.parse_args(argv)
+    from . import config
+    if a.setup:
+        config.wizard(); return
+    if not a.pcap:
+        if config.load().get('exe') is None and sys.stdin is not None and sys.stdin.isatty():
+            if not config.wizard(): return
+            print('Setup done. Now run:  nwkills.exe capture.pcapng   (or drag the .pcapng onto nwkills.exe)'); return
+        ap.error('give the .pcapng capture to read (or run with --setup)')
+    a.exe = config.resolve_exe(a.exe)
+    if not a.exe: return
     from . import emu
     from .pcap import read_pcapng
     from .roster import build_roster, lookup
@@ -45,10 +69,10 @@ def main(argv=None):
     if not emu.load_exe(a.exe):
         print('WARNING: this mb_warband.exe is not the build the tables were made for (Warband 1.174 / NW 1.210); results may be wrong.', file=sys.stderr)
     t = time.time()
-    cache = None
+    cache = None; flow_items = None
     if a.cache and os.path.exists(a.cache):
         import pickle
-        recs, ros = pickle.load(open(a.cache, 'rb')); print('loaded %d decoded packets from %s' % (len(recs), a.cache))
+        _c = pickle.load(open(a.cache, 'rb')); recs, ros = _c[0], _c[1]; flow_items = _c[2] if len(_c) > 2 else None; print('loaded %d decoded packets from %s' % (len(recs), a.cache))
     else:
         print('reading capture ...'); ifs, pk = read_pcapng(a.pcap)
         key, flow = find_server_flow(pk, a.port)
@@ -56,7 +80,8 @@ def main(argv=None):
         print('server flow %s:%d -> %s:%d, %d packets' % (key[0], key[1], key[2], key[3], len(flow)))
         if a.limit: flow = flow[:a.limit]
         t0 = flow[0][0]
-        ros = build_roster([(ts - t0, pl) for ts, pl in flow])
+        flow_items = [(ts - t0, pl) for ts, pl in flow]
+        ros = build_roster(flow_items)
         print('%d player names found' % sum(len(v) for v in ros.values()))
         from . import decoder
         print('calibrating bit widths for this server ...')
@@ -71,7 +96,7 @@ def main(argv=None):
         print('%d/%d packets parsed cleanly' % (good, len(recs)))
         if a.cache:
             import pickle
-            pickle.dump((recs, ros), open(a.cache, 'wb'))
+            pickle.dump((recs, ros, flow_items), open(a.cache, 'wb'))
     def namer(s, tt):
         if s is None: return '?'
         if s < 0: return '(AI)'
@@ -83,25 +108,53 @@ def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
     items = json.load(open(os.path.join(here, 'data', 'items.json')))
     ev, ls = decode(recs, None, me, items, namer)
+    need = set(e[r + '_slot'] for e in ev for r in ('killer', 'victim') if e[r + '_slot'] is not None and e[r + '_slot'] >= 0 and lookup(ros, e[r + '_slot'], e['time']) is None)
+    if need and flow_items is None:
+        _i, _pk = read_pcapng(a.pcap); _k, _f = find_server_flow(_pk, a.port); flow_items = [(ts - _f[0][0], pl) for ts, pl in _f]
+    if need and flow_items:
+        from .roster import fill_roster
+        fill_roster(ros, flow_items, need)
+        ev, ls = decode(recs, None, me, items, namer)
+    for e in ev:
+        if e['killer_agent'] is not None and e['killer_agent'] < 0: e['killer'] = '(world)'
+    from .rounds import detect, round_of
+    def rkind(rs, t):
+        n = round_of(rs, t)
+        return next((r.get('kind', '') for r in rs if r['n'] == n), '')
+    rounds = detect(recs)
+    wt = sorted(e['time'] for e in ev if e['killer_agent'] is not None and e['killer_agent'] < 0)
+    burst_t = set(t for t in wt if sum(1 for u in wt if abs(u - t) <= 10) >= 3)
     out = a.out or os.path.splitext(a.pcap)[0] + '_kills.csv'
+    with open(os.path.splitext(out)[0].replace('_kills', '') + '_rounds.csv', 'w', newline='', encoding='utf-8-sig') as f:
+        w = csv.writer(f); w.writerow(['round', 'start_s', 'end_s', 'length_s', 'started_by', 'tickets_zero_at_s', 'tickets_zero_team', 'kills_after_tickets_zero', 'kind', 'death_msgs', 'method', 'review'])
+        for r in rounds: w.writerow([r['n'], round(r['start']), round(r['end']), round(r['end'] - r['start']), r['signals'], r['tickets_zero'][0] if r['tickets_zero'] else '', r['tickets_zero'][1] if r['tickets_zero'] else '', r.get('kills_after_zero', ''), r.get('kind', ''), r['kills'], r['method'], r['review']])
     known = set(WCODE)
     with open(out, 'w', newline='', encoding='utf-8-sig') as f:
-        w = csv.writer(f); w.writerow(['time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'review', 'killer_slot', 'victim_slot'])
+        w = csv.writer(f); w.writerow(['round', 'round_kind', 'time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'respawn_s', 'review', 'killer_slot', 'victim_slot'])
         for e in ev:
             flags = []
-            if not isinstance(e['killer'], str) or e['killer'].startswith(('?', 'player#')): flags.append('killer?')
-            if not isinstance(e['victim'], str) or e['victim'].startswith(('?', 'player#')): flags.append('victim?')
+            if e['killer'] == '?' and e['time'] < 90: flags.append('before-sync')
+            elif not isinstance(e['killer'], str) or e['killer'].startswith(('?', 'player#')): flags.append('killer?')
+            if e['victim'] == '?' and e['time'] < 90: flags.append('before-sync')
+            elif not isinstance(e['victim'], str) or e['victim'].startswith(('?', 'player#')): flags.append('victim?')
             if e['weapon'].startswith('class '): flags.append('weapon?')
-            if e['killer'] == e['victim'] and e['killer'] not in ('?', '(AI)'): flags.append('self')
-            w.writerow([e['time'], '%d:%02d' % divmod(int(e['time']), 60), e['killer'], e['victim'], e['weapon'], e['teamkill'], ' '.join(flags), e['killer_slot'], e['victim_slot']])
+            if e['weapon'].startswith('self-inflicted'): flags.append('suicide?')
+            if e['killer'] == e['victim'] and e['killer'] not in ('?', '(AI)', '(world)'): flags.append('self')
+            w.writerow([round_of(rounds, e['time']), rkind(rounds, e['time']), e['time'], '%d:%02d' % divmod(int(e['time']), 60), e['killer'], e['victim'], e['weapon'], e['teamkill'], death_type(e, e['time'] in burst_t), '' if e.get('respawn') is None else e['respawn'], ' '.join(flags), e['killer_slot'], e['victim_slot']])
     st = collections.defaultdict(lambda: collections.Counter())
     for e in ev:
-        st[e['killer']]['kills'] += 1; st[e['victim']]['deaths'] += 1
+        dt = death_type(e, e['time'] in burst_t)
+        if dt == 'AI/horse death':
+            if e['killer'] not in ('?', '(AI)', '(world)'): st[e['killer']]['ai_kills'] += 1
+            continue
+        if dt == 'kill' or dt.startswith('non-blow'):
+            if dt == 'kill': st[e['killer']]['kills'] += 1
+        st[e['victim']]['deaths'] += 1
         if e['teamkill']: st[e['killer']]['teamkills'] += 1
     sp = os.path.splitext(out)[0] + '_players.csv'
     with open(sp, 'w', newline='', encoding='utf-8-sig') as f:
-        w = csv.writer(f); w.writerow(['player', 'kills', 'deaths', 'teamkills'])
-        for n, c in sorted(st.items(), key=lambda kv: -kv[1]['kills']): w.writerow([n, c['kills'], c['deaths'], c['teamkills']])
+        w = csv.writer(f); w.writerow(['player', 'kills', 'deaths', 'teamkills', 'ai_kills'])
+        for n, c in sorted(st.items(), key=lambda kv: -kv[1]['kills']): w.writerow([n, c['kills'], c['deaths'], c['teamkills'], c['ai_kills']])
     print('%d kills -> %s\nper player -> %s\ndone in %.0f s' % (len(ev), out, sp, time.time() - t))
 
 if __name__ == '__main__':

@@ -46,7 +46,7 @@ def parse_tail(b,pos):
         g,pos=gap(b,pos)
         if g is None: return None
         if g==0: break
-        idx+=g
+        idx=(idx+g)&0xFFFFFFFF
         a,p=divmod(idx,STRIDE); w=PROP_W[p]
         v=bits(b,pos,w)
         if v is None: return None
@@ -56,7 +56,7 @@ def parse_tail(b,pos):
         g,pos=gap(b,pos)
         if g is None: return None
         if g==0: break
-        idx+=g
+        idx=(idx+g)&0xFFFFFFFF
         pl,p=divmod(idx,2); w=13 if p==0 else 10
         v=bits(b,pos,w)
         if v is None: return None
