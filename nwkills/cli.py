@@ -137,6 +137,7 @@ def main(argv=None):
             elif not isinstance(e['killer'], str) or e['killer'].startswith(('?', 'player#')): flags.append('killer?')
             if e['victim'] == '?' and e['time'] < 90: flags.append('before-sync')
             elif not isinstance(e['victim'], str) or e['victim'].startswith(('?', 'player#')): flags.append('victim?')
+            if e.get('late'): flags.append('name-from-later-data(%s)' % '+'.join(e['late']))
             if e['weapon'].startswith('class '): flags.append('weapon?')
             if e['weapon'].startswith('self-inflicted'): flags.append('suicide?')
             if e['killer'] == e['victim'] and e['killer'] not in ('?', '(AI)', '(world)'): flags.append('self')

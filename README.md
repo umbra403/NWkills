@@ -11,7 +11,7 @@ class, and teamkills. No server access needed. Works for NW and NWE (bit widths 
 
 Options: `--out file.csv`, `--port N` (server UDP port, normally auto-detected), `--me NAME` (part of your own name),
 `--jobs N` (CPU cores, default all), `--cache file.pkl` (keep decoded packets so you can re-run the kill logic quickly), `--limit N` (test on the first N packets).
-A 1-hour capture (~115k packets) takes ~9 minutes on 2 cores.
+A 2-hour capture (~115k packets) takes ~9 minutes on 2 cores.
 
 ## Columns
 `time_s` seconds since capture start (video time = time_s + your capture/recording offset). `weapon`: firearm / pistol / bayonet or spear / sword / cannonball / shrapnel / explosion / headshot (+ the musket from the projectile). `teamkill`: killer's score went down at that kill.

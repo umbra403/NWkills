@@ -58,11 +58,27 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
     def who(a,t):
         c=[o for o in owner if o[1]==a and o[0]<t-0.3]
         return c[-1][2] if c else None
+    by_agent=collections.defaultdict(list)
+    for o in owner: by_agent[o[1]].append(o)
+    def who_late(a,t,win=120.0):
+        """Owner of agent a learned from data that arrives AFTER the event (agents already present when the capture started
+        are only listed later). Used only when nothing earlier is known; accepted only if every sighting within win seconds
+        agrees on one player (an agent id is reused once the agent is gone, so a conflict means we cannot tell)."""
+        c=[o for o in by_agent.get(a,[]) if t-0.3<=o[0]<=t+win]
+        sl=set(o[2] for o in c)
+        return sl.pop() if len(sl)==1 else None
     lastv={}; out=[]
     by_slot=collections.defaultdict(list)
     for o in owner: by_slot[o[2]].append(o)
     for k in kills:
         t=k['t']; ks=who(k['killer'],t); vs=who(k['victim'],t)
+        late=[]
+        if ks is None:
+            ks=who_late(k['killer'],t)
+            if ks is not None: late.append('killer')
+        if vs is None:
+            vs=who_late(k['victim'],t)
+            if vs is not None: late.append('victim')
         dl=None
         if ks is not None:
             w=[x for tt,x in obs.get(ks,[]) if t-0.3<=tt<=t+2.5]
@@ -80,5 +96,5 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
         elif k['wcode']==0:
             pi=[it for tt,sh,it in miss if sh==k['killer'] and -1.0<t-tt<1.0]
             if pi and items and 0<=pi[0]<len(items): wn+=' ('+items[pi[0]][4:]+')'
-        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if dl is not None and dl<0 else '',killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra')))
+        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if dl is not None and dl<0 else '',killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra'),late=late))
     return out,local_slot
