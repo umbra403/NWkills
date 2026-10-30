@@ -142,19 +142,30 @@ def main(argv=None):
             if e['killer'] == e['victim'] and e['killer'] not in ('?', '(AI)', '(world)'): flags.append('self')
             w.writerow([round_of(rounds, e['time']), rkind(rounds, e['time']), e['time'], '%d:%02d' % divmod(int(e['time']), 60), e['killer'], e['victim'], e['weapon'], e['teamkill'], death_type(e, e['time'] in burst_t), '' if e.get('respawn') is None else e['respawn'], ' '.join(flags), e['killer_slot'], e['victim_slot']])
     st = collections.defaultdict(lambda: collections.Counter())
+    def bump(name, key, rn):
+        st[name][key] += 1; st[name][(rn, key)] += 1
     for e in ev:
         dt = death_type(e, e['time'] in burst_t)
+        rn = round_of(rounds, e['time'])
         if dt == 'AI/horse death':
-            if e['killer'] not in ('?', '(AI)', '(world)'): st[e['killer']]['ai_kills'] += 1
+            if e['killer'] not in ('?', '(AI)', '(world)'): bump(e['killer'], 'ai_kills', rn)
             continue
-        if dt == 'kill' or dt.startswith('non-blow'):
-            if dt == 'kill': st[e['killer']]['kills'] += 1
-        st[e['victim']]['deaths'] += 1
-        if e['teamkill']: st[e['killer']]['teamkills'] += 1
+        if dt.startswith('kill') and not e['teamkill']: bump(e['killer'], 'kills', rn)      # teamkills are counted separately, not as kills
+        bump(e['victim'], 'deaths', rn)
+        if e['teamkill']: bump(e['killer'], 'teamkills', rn)
     sp = os.path.splitext(out)[0] + '_players.csv'
+    kinds = {r['n']: r.get('kind', '') for r in rounds}
+    cols = []
+    for r in rounds:
+        lab = 'R%d' % r['n'] + ('(%s)' % r['kind'] if r.get('kind') else '')
+        cols += [((r['n'], k), '%s_%s' % (lab, k)) for k in ('kills', 'deaths', 'teamkills')]
     with open(sp, 'w', newline='', encoding='utf-8-sig') as f:
-        w = csv.writer(f); w.writerow(['player', 'kills', 'deaths', 'teamkills', 'ai_kills'])
-        for n, c in sorted(st.items(), key=lambda kv: -kv[1]['kills']): w.writerow([n, c['kills'], c['deaths'], c['teamkills'], c['ai_kills']])
+        w = csv.writer(f); w.writerow(['player', 'kills', 'deaths', 'teamkills', 'ai_kills'] + [h for _, h in cols])
+        keep = [r['n'] for r in rounds if r.get('kind') != 'warm-up']      # overall totals leave out warm-up rounds
+        tot = lambda c, k: sum(c[(rn, k)] for rn in keep)
+        rows = [(n, c) for n, c in st.items()]
+        rows.sort(key=lambda nc: -tot(nc[1], 'kills'))
+        for n, c in rows: w.writerow([n] + [tot(c, k) for k in ('kills', 'deaths', 'teamkills', 'ai_kills')] + [c[k] for k, _ in cols])
     print('%d kills -> %s\nper player -> %s\ndone in %.0f s' % (len(ev), out, sp, time.time() - t))
 
 if __name__ == '__main__':

@@ -7,7 +7,7 @@ class, and teamkills. No server access needed. Works for NW and NWE (bit widths 
 1. Capture with Wireshark while playing (save as .pcapng). Start the capture BEFORE joining, so the player list is included.
 2. First time only: run `nwkills.exe --setup` (or just run it, or run it on a capture): a short wizard finds or asks for your `mb_warband.exe` and remembers it (`%APPDATA%\nwkills\config.json`). Then: `nwkills.exe capture.pcapng` (or drag the .pcapng onto it). `--exe PATH` still overrides the saved path.
    (Your game exe is only read. It must be the Warband 1.174 / NW 1.210 build, sha256 ff4a28c5...dae13; a warning is printed otherwise.)
-3. Output: `capture_kills.csv` (one row per kill) and `capture_players.csv` (kills / deaths / teamkills per player).
+3. Output: `capture_kills.csv` (one row per kill) and `capture_players.csv` (kills, deaths, teamkills per player, with the same three numbers for every round; overall totals exclude warm-up rounds; teamkills are not counted in kills).
 
 Options: `--out file.csv`, `--port N` (server UDP port, normally auto-detected), `--me NAME` (part of your own name),
 `--jobs N` (CPU cores, default all), `--cache file.pkl` (keep decoded packets so you can re-run the kill logic quickly), `--limit N` (test on the first N packets).
