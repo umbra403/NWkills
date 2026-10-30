@@ -11,7 +11,7 @@ class, and teamkills. No server access needed. Works for NW and NWE (bit widths 
 
 Options: `--out file.csv`, `--port N` (server UDP port, normally auto-detected), `--me NAME` (part of your own name),
 `--jobs N` (CPU cores, default all), `--cache file.pkl` (keep decoded packets so you can re-run the kill logic quickly), `--limit N` (test on the first N packets).
-A 2-hour capture (~115k packets) takes ~9 minutes on 2 cores.
+A 1-hour capture (~115k packets) takes ~9 minutes on 2 cores.
 
 ## Columns
 `time_s` seconds since capture start (video time = time_s + your capture/recording offset). `weapon`: firearm / pistol / bayonet or spear / sword / cannonball / shrapnel / explosion / headshot (+ the musket from the projectile). `teamkill`: killer's score went down at that kill.
@@ -31,6 +31,6 @@ A 2-hour capture (~115k packets) takes ~9 minutes on 2 cores.
 
 ## Rounds
 Written to `<name>_rounds.csv` and as `round` / `round_kind` columns in the kills CSV.
-- **Server messages (preferred):** the server's own chat lines "Changed the map to ..." (map load) and "Has reset the Map." (admin reset, also a type-41 marker). Typical admin pattern: map change = warm-up round (friendly fire off 30 s), then reset = LIVE round. A map change followed by a reset is labelled `warm-up` (filter as dud); everything after a reset is `live`.
+- **Server messages (preferred; also 'Friendly fire is now on' minus the FF delay recovers restarts with no reset line):** the server's own chat lines "Changed the map to ..." (map load) and "Has reset the Map." (admin reset, also a type-41 marker). Typical admin pattern: map change = warm-up round (friendly fire off 30 s), then reset = LIVE round. A map change followed by a reset is labelled `warm-up` (filter as dud); everything after a reset is `live`.
 - **Tickets:** on NWE the module's team-ticket event adds `tickets_zero_at_s` (round decided) and `kills_after_tickets_zero`.
 - **Fallback** (no such chat lines): activity lulls and map-load signals.

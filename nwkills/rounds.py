@@ -120,22 +120,40 @@ def _zeros(series, zero=5):
         cur[team] = v
     return out
 
-def server_events(recs, merge=60.0):
-    """Round boundaries announced by the server itself: text lines 'Changed the map to ...' (map load)
-    and 'Has reset the Map.' (same-map restart; also marked by a type-41 message). Returns [(t, kind)]."""
-    ev = []
+def server_events(recs, merge=60.0, ff_delay=30.0, near=12.0):
+    """Round boundaries announced by the server itself: text lines 'Changed the map to ...' (map load) and
+    'Has reset the Map.' (admin reset; also a type-41 marker). Every round start is also followed, 30 s later,
+    by 'Friendly fire is now on' - so a restart done without those lines (e.g. admin 'Slayed Everyone')
+    is recovered from that message (start = t - 30 s, snapped to a nearby 'Slayed Everyone' line).
+    Returns [(t, kind)] with kind 'map' or 'reset'."""
+    import re
+    ev = []; ff = []; slay = []; delay = ff_delay
     for r in recs:
         for tx in r.get('txt', ()):
+            m = re.search(r'(?:after|to) (\d+) second', tx)
+            if m and ('Friendly fire' in tx or 'friendly fire' in tx): delay = float(m.group(1))   # server-configured FF delay (20/30 s ...)
             if 'Changed the map to' in tx: ev.append((r['t'], 'map'))
             elif 'Has reset the Map' in tx: ev.append((r['t'], 'reset'))
+            elif 'Friendly fire is now on' in tx: ff.append((r['t'], delay))
+            elif 'Slayed Everyone' in tx: slay.append(r['t'])
         if r.get('rst'): ev.append((r['t'], 'reset'))
     ev.sort()
-    if not any('Has reset the Map' in tx for r in recs for tx in r.get('txt', ())): return []   # server without admin chat lines
+    if not any(k == 'reset' for t, k in ev) and not ff: return []   # server without admin chat lines
+    if not any(k == 'reset' for t, k in ev) and not any(k == 'map' for t, k in ev): return []
     out = []
     for t, k in ev:
-        if out and out[-1][1] == k and t - out[-1][0] < merge: continue
+        if out and out[-1][1] == k and t - out[-1][0] < (merge if k == 'map' else 20.0): continue
         if out and t - out[-1][0] < 3: continue
         out.append((t, k))
+    prev_ff = None
+    for tf, dl in sorted(ff):
+        if prev_ff is not None and tf - prev_ff < 15: continue
+        prev_ff = tf
+        ts = tf - dl
+        if any(abs(t - ts) <= 10 or tf - 50 <= t <= tf - 10 for t, k in out): continue      # explained by a map change / reset line (delay may be unknown at capture start)
+        sn = [u for u in slay if abs(u - ts) <= near]
+        out.append((min(sn, key=lambda u: abs(u - ts)) if sn else ts, 'reset'))
+    out.sort()
     return out
 
 def detect_server(recs, ev, series=None):
@@ -151,7 +169,8 @@ def detect_server(recs, ev, series=None):
         nk = sum(1 for t in kt if s0 <= t < e)
         kz = sum(1 for t in kt if z and z[0][0] <= t < e)
         nxt = kinds[i + 1] if i + 1 < len(kinds) else None
-        warm = kinds[i] == 'map' and nxt == 'reset'      # map change followed by an admin reset = warm-up round
+        e_next = starts[i + 1] if i + 1 < len(starts) else None
+        warm = (kinds[i] == 'map' and nxt == 'reset') or (kinds[i] == 'reset' and nxt == 'reset' and e_next - s0 < 60)   # map change (or quick reset) followed by the real admin reset = warm-up round
         live = not warm and kinds[i] != 'capture start'
         rev = []
         if warm: rev.append('not live (warm-up before admin reset): dud?')
