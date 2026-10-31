@@ -54,11 +54,14 @@ How round starts are found, in order of preference:
 - **Tickets (NWE):** the team-ticket event adds `tickets_zero_at_s` (round decided) and `kills_after_tickets_zero`.
 - **Fallback** (no such chat lines): activity lulls and map-load signals.
 
+## Weapon classes (from the exe)
+The client picks the killfeed icon with a jump table on the 5-bit weapon class: 0 headshot, 1 couched lance, 2 punch, 3 horse impact, 4 bow, 5 crossbow (the module draws muskets with it), 6 thrown axe, 7 thrown knife, 8 javelin, 9 thrown stone, 10 pistol, 11 musket, 12 one-handed sword, 13 two-handed sword, 14 one-handed axe, 15 two-handed axe, 16 blunt (mace/club), 17 spear (bayonet), 18 morningstar, 19 maul (hammer), 20-26 custom icons 1-7 (20 cannonball, 21 canister, 22 explosion seen on video). Values above 26 draw no icon.
+
 ## Names
 Slots are reused. When a player's name later appears (repeatedly) in a different slot, the old slot is treated as unknown from then on, and the new occupant's name is looked up from later data in the capture (otherwise the old name stuck to whoever took the slot). Near-simultaneous repeats of the same death message (same victim within 6 s) are dropped.
 
 ## Known limits
 - About 96% of kills have both names resolved; the rest are flagged in `review`.
-- Classes 14, 23 and a few others are not identified yet (shown as `class N`). Class 3 (horse charge) kills usually have no killer name: the killer agent is the horse, not the rider.
+- Weapon classes come from the exe's killfeed icon table (27 classes, 0-26; see below). Labels with an `(ico_...)` suffix come from the table only (the art has not been seen on video) and carry the `weapon?` flag. Class 23 (`ico_custom_4`) is a module-defined icon; all 4 sightings are killer = victim. Class 3 (horse charge) kills usually have no killer name: the killer agent is the horse, not the rider.
 - Built for exactly the exe build above; `nwkills/data/ins_subset.pkl` is the instruction trace the decoder needs (generated from that exe).
-
+Push this folder to a repo; the workflow `build-windows` produces `nwkills.exe` as an artifact. Local: `python nwkills.py ...` (Python 3.10+, no dependencies).
