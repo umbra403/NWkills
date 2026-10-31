@@ -18,7 +18,7 @@ def death_type(e, burst=False):
     if ks is not None and ks == vs: return 'self-inflicted (suicide/fall?)'
     if e.get('horse'): return 'horse death (player-owned mount)'     # victim agent is the player's horse (no rider properties); not a player death, no score
     if e.get('mode') != 2:
-        if ks is not None and ks >= 0: return 'kill (no blow detail)'      # known, different killer: a real kill, blow data missing
+        if ks is not None and ks >= 0: return 'no-blow death (mount?, not counted)'      # known killer, no blow data and no killfeed line (seen on video: horse deaths); not counted
         return 'non-blow death (leave/class change?)'
     return 'kill'
 
@@ -98,6 +98,8 @@ def main(argv=None):
         if a.cache:
             import pickle
             pickle.dump((recs, ros, flow_items), open(a.cache, 'wb'))
+    from .roster import retire_moved
+    _since = retire_moved(ros)
     def namer(s, tt):
         if s is None: return '?'
         if s < 0: return '(AI)'
@@ -109,12 +111,12 @@ def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
     items = json.load(open(os.path.join(here, 'data', 'items.json')))
     ev, ls = decode(recs, None, me, items, namer)
-    need = set(e[r + '_slot'] for e in ev for r in ('killer', 'victim') if e[r + '_slot'] is not None and e[r + '_slot'] >= 0 and lookup(ros, e[r + '_slot'], e['time']) is None)
+    need = set(e[r + '_slot'] for e in ev for r in ('killer', 'victim') if e[r + '_slot'] is not None and e[r + '_slot'] >= 0 and not lookup(ros, e[r + '_slot'], e['time']))
     if need and flow_items is None:
         _i, _pk = read_pcapng(a.pcap); _k, _f = find_server_flow(_pk, a.port); flow_items = [(ts - _f[0][0], pl) for ts, pl in _f]
     if need and flow_items:
         from .roster import fill_roster
-        fill_roster(ros, flow_items, need)
+        fill_roster(ros, flow_items, need, since=_since)
         ev, ls = decode(recs, None, me, items, namer)
     for e in ev:
         if e['killer_agent'] is not None and e['killer_agent'] < 0: e['killer'] = '(world)'
@@ -140,7 +142,7 @@ def main(argv=None):
             elif not isinstance(e['victim'], str) or e['victim'].startswith(('?', 'player#')): flags.append('victim?')
             if e.get('late'): flags.append('name-from-later-data(%s)' % '+'.join(e['late']))
             if e['weapon'].startswith('class '): flags.append('weapon?')
-            if e['weapon'].startswith('self-inflicted'): flags.append('suicide?')
+            
             if e['killer'] == e['victim'] and e['killer'] not in ('?', '(AI)', '(world)'): flags.append('self')
             w.writerow([round_of(rounds, e['time']), rkind(rounds, e['time']), e['time'], '%d:%02d' % divmod(int(e['time']), 60), e['killer'], e['victim'], e['weapon'], e['teamkill'], death_type(e, e['time'] in burst_t), '' if e.get('respawn') is None else e['respawn'], ' '.join(flags), e['killer_slot'], e['victim_slot']])
     st = collections.defaultdict(lambda: collections.Counter())
@@ -149,11 +151,11 @@ def main(argv=None):
     for e in ev:
         dt = death_type(e, e['time'] in burst_t)
         rn = round_of(rounds, e['time'])
-        if dt.startswith('horse death'): continue
+        if dt.startswith(('horse death', 'no-blow death')): continue
         if dt == 'AI/horse death':
             if e['killer'] not in ('?', '(AI)', '(world)'): bump(e['killer'], 'ai_kills', rn)
             continue
-        if dt.startswith('kill') and not e['teamkill']: bump(e['killer'], 'kills', rn)      # teamkills are counted separately, not as kills
+        if dt == 'kill' and not e['teamkill']: bump(e['killer'], 'kills', rn)      # teamkills are counted separately, not as kills
         bump(e['victim'], 'deaths', rn)
         if e['teamkill']: bump(e['killer'], 'teamkills', rn)
     sp = os.path.splitext(out)[0] + '_players.csv'
@@ -173,7 +175,7 @@ def main(argv=None):
     for e in ev:
         if e['killer_slot'] is None or e['killer_slot'] < 0: continue
         dt = death_type(e, False)
-        if dt.startswith('kill') or (dt.startswith('self') and e['teamkill']):
+        if dt == 'kill' or (dt.startswith('self') and e['teamkill']):
             byslot[e['killer_slot']].append((e['time'], -1 if e['teamkill'] else 1))
     for slot, ser in sb.items():
         for r in rounds:

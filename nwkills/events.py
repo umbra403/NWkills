@@ -1,5 +1,5 @@
 import csv,json,os,collections
-WCODE={2:'self-inflicted? (class 2)',20:'artillery: cannonball',21:'artillery: shrapnel/canister',22:'artillery: explosion',17:'melee: bayonet/spear',12:'melee: sword/sabre',5:'firearm: musket/rifle',10:'firearm: pistol',0:'headshot'}
+WCODE={3:'cavalry: horse charge (rider hit)',19:'melee: hammer/mallet',1:'melee: couched lance (cavalry)',2:'fists (punch)',16:'melee: mace/club?',20:'artillery: cannonball',21:'artillery: shrapnel/canister',22:'artillery: explosion',17:'melee: bayonet/spear',12:'melee: sword/sabre',5:'firearm: musket/rifle',10:'firearm: pistol',0:'headshot'}
 MAXSLOT=250
 def load_roster(path):
     r={}
@@ -36,11 +36,10 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             for pl,p,val in tl['players']:
                 if p==0: obs[pl].append((t,val-8192 if val>=4096 else val))
     kills=[k for k in kills if any(abs(x-k['t'])<3 for x in dm.get(k['victim'],[]))]
-    seen=set(); k2=[]
-    for k in kills:
-        key=(k['victim'],round(k['t']/6))
-        if key in seen: continue
-        seen.add(key); k2.append(k)
+    lastk={}; k2=[]
+    for k in kills:      # an agent cannot die twice within a few seconds: drop repeats of the same death message (no bucket edges)
+        if k['victim'] in lastk and k['t']-lastk[k['victim']]<6: continue
+        lastk[k['victim']]=k['t']; k2.append(k)
     kills=k2
     owner=sorted(set(owner))
     if local_slot is None:

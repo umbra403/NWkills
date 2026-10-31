@@ -35,10 +35,31 @@ def lookup(roster, slot, t):
         if x[0] <= t + 5: cur = x
     return cur[2]
 
-def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0):
+def retire_moved(roster):
+    """A name can only hold one slot at a time. When a name first shows up in another slot later, its old slot is no longer
+    that player's from that moment (they left and rejoined); mark it unknown ('' entry) so a stale name is not reused for
+    whoever took the slot. Returns {slot: time_from_which_the_name_is_unknown}."""
+    firsts = collections.defaultdict(list)
+    for sl, v in roster.items():
+        for x in v:
+            if x[2]: firsts[x[2]].append((x[0], sl, x[3]))
+    since = {}
+    for nm, lst in firsts.items():
+        lst.sort()
+        for (f1, s1, c1), (f2, s2, c2) in zip(lst, lst[1:]):
+            if s1 == s2 or c2 < 2: continue      # one-off sightings can be coincidental byte patterns: need a repeated sighting
+            cur = [x for x in roster[s1] if x[0] <= f2 + 5]
+            if cur and cur[-1][2] == nm and not any(x[0] > f2 and x[2] != nm for x in roster[s1]):
+                if not any((not x[2]) and abs(x[0] - f2) < 1 for x in roster[s1]):
+                    roster[s1] = sorted(roster[s1] + [(f2, f2, '', 0)])
+                since[s1] = min(since.get(s1, 1e18), f2)
+    return since
+
+def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0, since=None):
     """Names that were never announced with the usual join record (e.g. you joined later) still show up next to the player id in
     chat/other records. For slots that need a name, take the printable string that repeats at >=2 separate moments."""
-    need = [s for s in need_slots if s is not None and s >= 0 and s not in roster]
+    since = since or {}
+    need = [s for s in need_slots if s is not None and s >= 0 and (s not in roster or s in since)]
     if not need: return roster
     cls = bytes(sorted(set(s + 1 for s in need if s + 1 < 256)))
     if not cls: return roster
@@ -50,6 +71,7 @@ def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0):
         for k in range(8):
             b = _shift(pl, k)
             for m in pat.finditer(b):
+                if t < since.get(m.group(1)[0] - 1, -1): continue
                 L = m.group(2)[0]; ch = b[m.end():m.end()+L]
                 if len(ch) == L and not ch.translate(None, PRINT):
                     nm = ch.decode()
@@ -63,5 +85,5 @@ def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0):
             sc = (min(clusters, 2) if not tagged else clusters + 1, 1 if tagged else 0, len(ts))
             if pid not in best or sc > best[pid][0]: best[pid] = (sc, nm, ts[0], ts[-1], len(ts))
     for pid, (sc, nm, a, b, c) in best.items():
-        roster[pid - 1] = [(a, b, nm, c)]
+        roster[pid - 1] = sorted([x for x in roster.get(pid - 1, []) if pid - 1 in since] + [(a, b, nm, c)])
     return roster
