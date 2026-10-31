@@ -12,7 +12,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
     kills=[];last=None
     owner=[]  # (t,agent,slot)
     t18=[]; miss=[]
-    obs=collections.defaultdict(list); dm=collections.defaultdict(list)
+    obs=collections.defaultdict(list); dm=collections.defaultdict(list); rid=collections.defaultdict(list)
     for r in recs:
         t=r['t']
         for ty,v,w in r['msgs']:
@@ -32,6 +32,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             for a,p,val in tl['agents']:
                 if p==27 and 0<val<=MAXSLOT+1: owner.append((t if t>=30 else 0,a,val-1))
                 if p==13 and val==1: dm[a].append(t)
+                if p in (6,7): rid[a].append(t)      # rider agents carry properties 6/7; horses do not
             for pl,p,val in tl['players']:
                 if p==0: obs[pl].append((t,val-8192 if val>=4096 else val))
     kills=[k for k in kills if any(abs(x-k['t'])<3 for x in dm.get(k['victim'],[]))]
@@ -91,10 +92,14 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
         if vs is not None and vs>=0:
             nx=[o[0]-t for o in by_slot.get(vs,[]) if o[0]>t+0.5 and o[1]!=k['victim']]
             if nx and min(nx)<=120: resp=round(min(nx),1)
+        # no-blow death of a player-owned agent that has never shown rider properties = the player's horse
+        horse=False
+        if k.get('mode')!=2 and vs is not None and vs>=0 and ks is not None and ks>=0 and ks!=vs and rid:
+            horse=not any(t-20<=x<=t+0.5 for x in rid.get(k['victim'],[]))
         wn=WCODE.get(k['wcode'],'class %d'%k['wcode'])
         if k['wcode']==0 and k.get('mode')!=2: wn='no blow (mode %s)'%k.get('mode')
         elif k['wcode']==0:
             pi=[it for tt,sh,it in miss if sh==k['killer'] and -1.0<t-tt<1.0]
             if pi and items and 0<=pi[0]<len(items): wn+=' ('+items[pi[0]][4:]+')'
-        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if dl is not None and dl<0 else '',killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra'),late=late))
+        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if dl is not None and dl<0 else '',killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra'),late=late,horse=horse))
     return out,local_slot

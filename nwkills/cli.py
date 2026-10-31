@@ -16,6 +16,7 @@ def death_type(e, burst=False):
     if e['killer_agent'] is not None and e['killer_agent'] < 0:
         return 'world (left server/fall)'
     if ks is not None and ks == vs: return 'self-inflicted (suicide/fall?)'
+    if e.get('horse'): return 'horse death (player-owned mount)'     # victim agent is the player's horse (no rider properties); not a player death, no score
     if e.get('mode') != 2:
         if ks is not None and ks >= 0: return 'kill (no blow detail)'      # known, different killer: a real kill, blow data missing
         return 'non-blow death (leave/class change?)'
@@ -148,6 +149,7 @@ def main(argv=None):
     for e in ev:
         dt = death_type(e, e['time'] in burst_t)
         rn = round_of(rounds, e['time'])
+        if dt.startswith('horse death'): continue
         if dt == 'AI/horse death':
             if e['killer'] not in ('?', '(AI)', '(world)'): bump(e['killer'], 'ai_kills', rn)
             continue
@@ -155,18 +157,60 @@ def main(argv=None):
         bump(e['victim'], 'deaths', rn)
         if e['teamkill']: bump(e['killer'], 'teamkills', rn)
     sp = os.path.splitext(out)[0] + '_players.csv'
+    # --- scoreboard check: the server sends every player's current score (kills - teamkills) when you connect and on every change.
+    sb = collections.defaultdict(list)                       # slot -> [(t, score)]
+    for r in recs:
+        tl = r.get('tail')
+        if not tl: continue
+        for p_, pr, v in tl['players']:
+            if pr == 0 and 0 <= p_ < 250:
+                sc = v - 8192 if v >= 4096 else v
+                if abs(sc) <= 150 and (not sb[p_] or sb[p_][-1][1] != sc): sb[p_].append((r['t'], sc))
+    gap = collections.defaultdict(int); gapn = collections.Counter()     # (name, round) -> scoreboard change minus recorded net
+    sc0 = {}; sc1 = {}
+    BASE = 6.0       # the scoreboard reset lands a few seconds after the detected round start
+    byslot = collections.defaultdict(list)
+    for e in ev:
+        if e['killer_slot'] is None or e['killer_slot'] < 0: continue
+        dt = death_type(e, False)
+        if dt.startswith('kill') or (dt.startswith('self') and e['teamkill']):
+            byslot[e['killer_slot']].append((e['time'], -1 if e['teamkill'] else 1))
+    for slot, ser in sb.items():
+        for r in rounds:
+            tb = r['start'] + BASE if r['start'] > 0 else ser[0][0]
+            before = [v_ for t_, v_ in ser if t_ <= tb]
+            inr = [v_ for t_, v_ in ser if tb < t_ < r['end']]
+            if r['start'] > 0:
+                if not before: continue
+                s0_ = before[-1]
+            else: s0_ = ser[0][1]
+            vals = [s0_] + inr
+            if any(b_ - a_ < -15 for a_, b_ in zip(vals, vals[1:])): continue      # score reset inside the round (slot reused / player rejoined)
+            nm = lookup(ros, slot, tb)
+            if not nm: continue
+            net = sum(d for t_, d in byslot[slot] if tb < t_ < r['end'])
+            gap[(nm, r['n'])] += (vals[-1] - s0_) - net; gapn[(nm, r['n'])] += 1
+        nm = lookup(ros, slot, ser[0][0])
+        if nm: sc0[nm] = ser[0][1]; sc1[nm] = ser[-1][1]
     kinds = {r['n']: r.get('kind', '') for r in rounds}
     cols = []
     for r in rounds:
         lab = 'R%d' % r['n'] + ('(%s)' % r['kind'] if r.get('kind') else '')
-        cols += [((r['n'], k), '%s_%s' % (lab, k)) for k in ('kills', 'deaths', 'teamkills')]
+        cols += [((r['n'], k), '%s_%s' % (lab, k)) for k in ('kills', 'deaths', 'teamkills', 'score_gap')]
+    keep = [r['n'] for r in rounds if r.get('kind') != 'warm-up']      # overall totals leave out warm-up rounds
+    tot = lambda c, k: sum(c[(rn, k)] for rn in keep)
+    for nm in set(n for n, _ in gap) | set(st): st[nm]            # make sure every scoreboard player has a row
+    rows = list(st.items())
+    net = lambda c: tot(c, 'kills') - tot(c, 'teamkills')           # overall kills = kills minus teamkills (like the scoreboard)
+    rows.sort(key=lambda nc: -net(nc[1]))
     with open(sp, 'w', newline='', encoding='utf-8-sig') as f:
-        w = csv.writer(f); w.writerow(['player', 'kills', 'deaths', 'teamkills', 'ai_kills'] + [h for _, h in cols])
-        keep = [r['n'] for r in rounds if r.get('kind') != 'warm-up']      # overall totals leave out warm-up rounds
-        tot = lambda c, k: sum(c[(rn, k)] for rn in keep)
-        rows = [(n, c) for n, c in st.items()]
-        rows.sort(key=lambda nc: -tot(nc[1], 'kills'))
-        for n, c in rows: w.writerow([n] + [tot(c, k) for k in ('kills', 'deaths', 'teamkills', 'ai_kills')] + [c[k] for k, _ in cols])
+        w = csv.writer(f); w.writerow(['player', 'kills', 'deaths', 'teamkills', 'ai_kills', 'score_at_capture_start', 'score_at_capture_end', 'score_gap'] + [h for _, h in cols])
+        for n, c in rows:
+            gaps = [gap[(n, rn)] for rn in keep if (n, rn) in gapn]
+            row = [n, net(c), tot(c, 'deaths'), tot(c, 'teamkills'), tot(c, 'ai_kills'), sc0.get(n, ''), sc1.get(n, ''), sum(gaps) if gaps else '']
+            for (rn, k), _h in cols:
+                row.append((gap[(n, rn)] if (n, rn) in gapn else '') if k == 'score_gap' else c[(rn, k)])
+            w.writerow(row)
     print('%d kills -> %s\nper player -> %s\ndone in %.0f s' % (len(ev), out, sp, time.time() - t))
 
 if __name__ == '__main__':

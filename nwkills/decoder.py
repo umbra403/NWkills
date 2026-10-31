@@ -60,6 +60,8 @@ def msgs_only(pl, maxsteps=400000):
     return res, e.cursor, ms
 
 KEEP = (5, 6, 13, 18, 28)
+import os as _os
+_ALLPROPS = bool(_os.environ.get('NWKEEP_ALL_AGENT_PROPS'))      # research switch: keep every agent property (health etc.)
 def one(a):
     k, ts, pl = a
     n = pl[7]-1 if len(pl) > 7 else 0
@@ -80,7 +82,7 @@ def one(a):
     t = parse_tail(pl, pos)
     if t is None: rec['err'] = (rec['err'] or '') + 'tail'
     else:
-        rec['tail'] = dict(time=t['time'], agents=[x for x in t['agents'] if x[1] in (13, 27)], players=t['players'], end=t['end'])
+        rec['tail'] = dict(time=t['time'], agents=[x for x in t['agents'] if _ALLPROPS or x[1] in (6, 7, 13, 27)], players=t['players'], end=t['end'])
     return rec
 
 # ---- per-server calibration ------------------------------------------------------------------
