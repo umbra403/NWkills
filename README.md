@@ -13,7 +13,7 @@ class, and teamkills, split into rounds. No server access needed. Works for NW a
 
 Options: `--out file.csv`, `--port N` (server UDP port, normally auto-detected), `--me NAME` (part of your own name),
 `--jobs N` (CPU cores, default all), `--cache file.pkl` (keep decoded packets so you can re-run the kill logic quickly), `--limit N` (test on the first N packets).
-A 1-hour capture (~115k packets) takes about 1-3 minutes.
+A 2-hour capture (~115k packets) takes about 1-3 minutes.
 
 ## Kills file columns
 `round, round_kind, time_s, mm:ss, killer, victim, weapon, teamkill, death_type, respawn_s, review, killer_slot, victim_slot`
@@ -21,7 +21,7 @@ A 1-hour capture (~115k packets) takes about 1-3 minutes.
 - `weapon`: firearm: musket/rifle | firearm: pistol | melee: bayonet/spear | melee: sword/sabre | melee: couched lance (cavalry) | cavalry: horse charge (rider hit) | melee: hammer/mallet | melee: mace/club? | fists (punch) | artillery: cannonball / shrapnel/canister / explosion | headshot. `headshot` is also what weapon code 0 shows, which includes players leaving the server (see below). Confirmed against video: horse charge (class 3: white horse with an orange burst; the killer agent is the horse, so the killer name is often `?` or stale), hammer/mallet (class 19: handle with a square head), couched lance (class 1: horse and rider icon), fists (class 2: fist-with-burst icon; a killer-less version is shown when killer = victim), cannonball (black ball icon), shrapnel/canister (spray of small balls). `mace/club?` (class 16) is a single sighting.
 - `teamkill`: `yes` when the killer's score went down at that kill.
 - `respawn_s`: seconds until that victim gets a new agent (normal ~11 s; blank = none within 2 min, e.g. left).
-- `review`: flags to check - `killer?` / `victim?` (player could not be resolved), `before-sync` (first ~90 s, before the server announced agent owners), `name-from-later-data(killer|victim)` (name filled in from later sightings of the same agent in this capture), `weapon?` (unknown weapon class, shown as `class N`), `self`. `(AI)` = bot, `(world)` = no killer.
+- `review`: flags to check - `killer?` / `victim?` (player could not be resolved), `before-sync` (name unresolved in the first ~90 s of the capture), `name-from-later-data(killer|victim)` (name filled in from later sightings of the same agent in this capture), `weapon?` (unknown weapon class, shown as `class N`), `self`. `(AI)` = bot, `(world)` = no killer.
 
 ## Death types (`death_type`)
 | type | meaning |
@@ -64,4 +64,13 @@ Slots are reused. When a player's name later appears (repeatedly) in a different
 - About 96% of kills have both names resolved; the rest are flagged in `review`.
 - Weapon classes come from the exe's killfeed icon table (27 classes, 0-26; see below). Labels with an `(ico_...)` suffix come from the table only (the art has not been seen on video) and carry the `weapon?` flag. Class 23 (`ico_custom_4`) is a module-defined icon; all 4 sightings are killer = victim. Class 3 (horse charge) kills usually have no killer name: the killer agent is the horse, not the rider.
 - Built for Warband 1.174 / NW 1.210 packets. The message layouts in `nreader.py` were worked out from the game's own reader and checked against it on all four captures (about 400,000 messages, identical); the per-server bit widths are found from each capture (the `calibrating bit widths` step). A message type nobody has seen with a rare flag set makes that one packet unreadable (it is skipped, not mis-read).
-- Not tested on Windows; the exe is built by GitHub Actions.
+
+## Download and build
+- **Windows exe:** download `nwkills.exe` from the [Releases](../../releases) page. Windows SmartScreen may warn about an unknown publisher (More info > Run anyway); the exe is built from this source by GitHub Actions.
+- **From source:** `python nwkills.py capture.pcapng` (Python 3.10+, no dependencies).
+
+## Privacy
+Captures contain player names and IP addresses. Please do not post whole captures publicly; share the CSV, or a small trimmed capture, when reporting a bug.
+
+## Licence
+GPL-3.0-or-later, see [LICENSE](LICENSE). Not affiliated with TaleWorlds or the Napoleonic Wars team; no game files are included.
