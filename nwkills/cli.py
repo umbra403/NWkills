@@ -10,12 +10,15 @@ def _work(a):
 
 def death_type(e, burst=False):
     """Provisional classification (no ground truth yet for the non-blow kinds).
-    Server-log evidence: a player leaving shows as a killer-less death with weapon code 0 (shown as 'headshot')."""
+    Test capture with chat markers: fall = self + class 0, suicide = self + class 2, team swap = killer-less + class 0 (a player leaving the server looks the same)."""
     vs, ks = e['victim_slot'], e['killer_slot']
     if vs is not None and vs < 0: return 'AI/horse death'
     if e['killer_agent'] is not None and e['killer_agent'] < 0:
-        return 'world (left server/fall)'
-    if ks is not None and ks == vs: return 'self-inflicted (suicide/fall?)'
+        return 'world (team swap / left server)'
+    if ks is not None and ks == vs:
+        if e['weapon'].startswith('headshot'): return 'self-inflicted: fall'                       # confirmed by chat markers in a test capture
+        if e['weapon'].startswith('fists'): return 'self-inflicted: suicide (or admin slay)'    # slay and suicide share the packets and the killfeed icon
+        return 'self-inflicted (other)'
     if e.get('horse'): return 'horse death (player-owned mount)'     # victim agent is the player's horse (no rider properties); not a player death, no score
     if e.get('mode') != 2:
         if ks is not None and ks >= 0: return 'no-blow death (mount?, not counted)'      # known killer, no blow data and no killfeed line (seen on video: horse deaths); not counted

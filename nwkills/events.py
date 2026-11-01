@@ -94,6 +94,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
                 if b:
                     dl=w[0]-b[-1]
                     if dl==0: dl=None
+                elif -3 <= w[0] < 0: dl = w[0]      # first score ever sent for this player: the server omits a score of 0, so the baseline was 0
         resp=None
         if vs is not None and vs>=0:
             nx=[o[0]-t for o in by_slot.get(vs,[]) if o[0]>t+0.5 and o[1]!=k['victim']]

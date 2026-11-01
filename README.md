@@ -13,7 +13,7 @@ class, and teamkills, split into rounds. No server access needed. Works for NW a
 
 Options: `--out file.csv`, `--port N` (server UDP port, normally auto-detected), `--me NAME` (part of your own name),
 `--jobs N` (CPU cores, default all), `--cache file.pkl` (keep decoded packets so you can re-run the kill logic quickly), `--limit N` (test on the first N packets).
-A 1+-hour capture (~115k packets) takes about 1-3 minutes.
+A 1-hour capture (~115k packets) takes about 1-3 minutes.
 
 ## Kills file columns
 `round, round_kind, time_s, mm:ss, killer, victim, weapon, teamkill, death_type, respawn_s, review, killer_slot, victim_slot`
@@ -21,7 +21,7 @@ A 1+-hour capture (~115k packets) takes about 1-3 minutes.
 - `weapon`: firearm: musket/rifle | firearm: pistol | melee: bayonet/spear | melee: sword/sabre | melee: couched lance (cavalry) | cavalry: horse charge (rider hit) | melee: hammer/mallet | melee: mace/club? | fists (punch) | artillery: cannonball / shrapnel/canister / explosion | headshot. `headshot` is also what weapon code 0 shows, which includes players leaving the server (see below). Confirmed against video: horse charge (class 3: white horse with an orange burst; the killer agent is the horse, so the killer name is often `?` or stale), hammer/mallet (class 19: handle with a square head), couched lance (class 1: horse and rider icon), fists (class 2: fist-with-burst icon; a killer-less version is shown when killer = victim), cannonball (black ball icon), shrapnel/canister (spray of small balls). `mace/club?` (class 16) is a single sighting.
 - `teamkill`: `yes` when the killer's score went down at that kill.
 - `respawn_s`: seconds until that victim gets a new agent (normal ~11 s; blank = none within 2 min, e.g. left).
-- `review`: flags to check - `killer?` / `victim?` (player could not be resolved), `before-sync` (first ~90 s, before the server announced agent owners), `name-from-later-data(killer|victim)` (name filled in from later sightings of the same agent in this capture), `weapon?` (unknown weapon class, shown as `class N`), `suicide?`, `self`. `(AI)` = bot, `(world)` = no killer.
+- `review`: flags to check - `killer?` / `victim?` (player could not be resolved), `before-sync` (first ~90 s, before the server announced agent owners), `name-from-later-data(killer|victim)` (name filled in from later sightings of the same agent in this capture), `weapon?` (unknown weapon class, shown as `class N`), `self`. `(AI)` = bot, `(world)` = no killer.
 
 ## Death types (`death_type`)
 | type | meaning |
@@ -30,8 +30,9 @@ A 1+-hour capture (~115k packets) takes about 1-3 minutes.
 | `no-blow death (mount?, not counted)` | known killer but no blow data. Seen on video: no killfeed line (horse deaths). Not counted in any total |
 | `horse death (player-owned mount)` | victim agent is a player's horse (no rider properties). Not a player death; not counted in any total |
 | `AI/horse death` | victim is a bot or unowned mount. Not a player death; counted as the killer's `ai_kills` |
-| `world (left server/fall)` | killer-less death with weapon code 0 (shown as `headshot`). A player leaving the server looks like this, hence the clusters at the end of events |
-| `self-inflicted (suicide/fall?)` | killer = victim (class 2, shown in game as a killer-less fist-icon line). A suicide drops the score by 1 (counted as a teamkill); an admin slay (`Slayed Player X` in chat) does not drop the score. Not separated into labels yet |
+| `world (team swap / left server)` | killer-less death with weapon code 0 (shown as `headshot`). Confirmed for your own team swap (test capture with chat markers); a player leaving the server looks the same, hence the clusters at the end of events. Your own disconnect death is not in the capture |
+| `self-inflicted: fall` | killer = victim with weapon class 0. Confirmed by chat markers (2 falls). Score -1 |
+| `self-inflicted: suicide (or admin slay)` | killer = victim with weapon class 2 (fist icon). Confirmed for suicide (2 cases); admin slays use the same packets and icon, so they cannot be told apart. Score -1 (counted as a teamkill) |
 | `non-blow death (leave/class change?)` | death message without a blow and no known killer |
 
 The exact causes inside the last few types are still provisional (no capture with known fall / drown / class change events yet).
@@ -63,3 +64,4 @@ Slots are reused. When a player's name later appears (repeatedly) in a different
 - About 96% of kills have both names resolved; the rest are flagged in `review`.
 - Weapon classes come from the exe's killfeed icon table (27 classes, 0-26; see below). Labels with an `(ico_...)` suffix come from the table only (the art has not been seen on video) and carry the `weapon?` flag. Class 23 (`ico_custom_4`) is a module-defined icon; all 4 sightings are killer = victim. Class 3 (horse charge) kills usually have no killer name: the killer agent is the horse, not the rider.
 - Built for Warband 1.174 / NW 1.210 packets. The message layouts in `nreader.py` were worked out from the game's own reader and checked against it on all four captures (about 400,000 messages, identical); the per-server bit widths are found from each capture (the `calibrating bit widths` step). A message type nobody has seen with a rare flag set makes that one packet unreadable (it is skipped, not mis-read).
+- Not tested on Windows; the exe is built by GitHub Actions.
