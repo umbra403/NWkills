@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pkl
+*.pcap
+*.pcapng
+*_kills.csv
+*_kills_players.csv
+*_rounds.csv
+build/
+dist/
+*.spec
