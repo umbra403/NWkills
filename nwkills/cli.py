@@ -1,8 +1,8 @@
 import argparse, collections, csv, json, os, struct, sys, time, multiprocessing as mp
 
-def _init(exe, prof):
-    from . import emu, decoder
-    emu.load_exe(exe); decoder.set_profile(prof)
+def _init(prof):
+    from . import decoder
+    decoder.set_profile(prof)
 
 def _work(a):
     from .decoder import one
@@ -44,8 +44,6 @@ def find_server_flow(pkts, want_port=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Read Mount & Blade: Warband Napoleonic Wars kills from a Wireshark capture (client side).')
     ap.add_argument('pcap', nargs='?', help='.pcapng captured while you were connected to the server')
-    ap.add_argument('--exe', help='path to your mb_warband.exe (optional: remembered after the first-run setup; the game is only read, never modified)')
-    ap.add_argument('--setup', action='store_true', help='run the setup wizard (set or change the saved mb_warband.exe path) and exit')
     ap.add_argument('--out', help='output CSV (default: <pcap>_kills.csv)')
     ap.add_argument('--port', type=int, help='server UDP port (default: auto-detect)')
     ap.add_argument('--me', help='part of your own player name (used as the local player)')
@@ -53,22 +51,10 @@ def main(argv=None):
     ap.add_argument('--cache', help='pickle file to save/reuse decoded packets (re-run the kill logic without re-decoding)')
     ap.add_argument('--limit', type=int, help='only decode the first N packets (test)')
     a = ap.parse_args(argv)
-    from . import config
-    if a.setup:
-        config.wizard(); return
-    if not a.pcap:
-        if config.load().get('exe') is None and sys.stdin is not None and sys.stdin.isatty():
-            if not config.wizard(): return
-            print('Setup done. Now run:  nwkills.exe capture.pcapng   (or drag the .pcapng onto nwkills.exe)'); return
-        ap.error('give the .pcapng capture to read (or run with --setup)')
-    a.exe = config.resolve_exe(a.exe)
-    if not a.exe: return
-    from . import emu
+    if not a.pcap: ap.error('give the .pcapng capture to read (or drag it onto nwkills.exe)')
     from .pcap import read_pcapng
     from .roster import build_roster, lookup
     from .events import decode, WCODE
-    if not emu.load_exe(a.exe):
-        print('WARNING: this mb_warband.exe is not the build the tables were made for (Warband 1.174 / NW 1.210); results may be wrong.', file=sys.stderr)
     t = time.time()
     cache = None; flow_items = None
     if a.cache and os.path.exists(a.cache):
@@ -89,7 +75,7 @@ def main(argv=None):
         prof = decoder.calibrate([pl for ts, pl in flow[:60000]], log=lambda m: print(m, flush=True))
         jobs = [(k, ts - t0, pl) for k, (ts, pl) in enumerate(flow) if len(pl) > 12]
         recs = []
-        with mp.Pool(a.jobs, initializer=_init, initargs=(a.exe, prof)) as p:
+        with mp.Pool(a.jobs, initializer=_init, initargs=(prof,)) as p:
             for i, r in enumerate(p.imap(_work, jobs, chunksize=32)):
                 recs.append(r)
                 if i % 5000 == 0: print('  decoded %d / %d packets  (%.0f s)' % (i, len(jobs), time.time() - t), flush=True)

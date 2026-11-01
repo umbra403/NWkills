@@ -5,16 +5,15 @@ class, and teamkills, split into rounds. No server access needed. Works for NW a
 
 ## Use
 1. Capture with Wireshark while playing (save as .pcapng). Start the capture BEFORE joining, so the player list is included.
-2. First time only: run `nwkills.exe --setup` (or just run it, or run it on a capture): a short wizard finds or asks for your `mb_warband.exe` and remembers it (`%APPDATA%\nwkills\config.json`). Then: `nwkills.exe capture.pcapng` (or drag the .pcapng onto it). `--exe PATH` still overrides the saved path.
-   (Your game exe is only read. It must be the Warband 1.174 / NW 1.210 build, sha256 ff4a28c5...dae13; a warning is printed otherwise.)
+2. Run `nwkills.exe capture.pcapng` (or drag the .pcapng onto it). No game files are needed: the packet reader is plain Python (`nwkills/nreader.py`, a table of message layouts), so nothing from the game ships with the tool.
 3. Output, next to the capture (or from `--out`):
    - `capture_kills.csv` - one row per death/kill.
    - `capture_kills_players.csv` - totals per player, plus per-round columns.
    - `capture_rounds.csv` - the detected rounds.
 
-Options: `--setup`, `--exe PATH`, `--out file.csv`, `--port N` (server UDP port, normally auto-detected), `--me NAME` (part of your own name),
+Options: `--out file.csv`, `--port N` (server UDP port, normally auto-detected), `--me NAME` (part of your own name),
 `--jobs N` (CPU cores, default all), `--cache file.pkl` (keep decoded packets so you can re-run the kill logic quickly), `--limit N` (test on the first N packets).
-A 2-hour capture (~115k packets) takes roughly 9 minutes on 2 cores.
+A 1+-hour capture (~115k packets) takes about 1-3 minutes.
 
 ## Kills file columns
 `round, round_kind, time_s, mm:ss, killer, victim, weapon, teamkill, death_type, respawn_s, review, killer_slot, victim_slot`
@@ -63,5 +62,4 @@ Slots are reused. When a player's name later appears (repeatedly) in a different
 ## Known limits
 - About 96% of kills have both names resolved; the rest are flagged in `review`.
 - Weapon classes come from the exe's killfeed icon table (27 classes, 0-26; see below). Labels with an `(ico_...)` suffix come from the table only (the art has not been seen on video) and carry the `weapon?` flag. Class 23 (`ico_custom_4`) is a module-defined icon; all 4 sightings are killer = victim. Class 3 (horse charge) kills usually have no killer name: the killer agent is the horse, not the rider.
-- Built for exactly the exe build above; `nwkills/data/ins_subset.pkl` is the instruction trace the decoder needs (generated from that exe).
-Push this folder to a repo; the workflow `build-windows` produces `nwkills.exe` as an artifact. Local: `python nwkills.py ...` (Python 3.10+, no dependencies).
+- Built for Warband 1.174 / NW 1.210 packets. The message layouts in `nreader.py` were worked out from the game's own reader and checked against it on all four captures (about 400,000 messages, identical); the per-server bit widths are found from each capture (the `calibrating bit widths` step). A message type nobody has seen with a rare flag set makes that one packet unreadable (it is skipped, not mis-read).
