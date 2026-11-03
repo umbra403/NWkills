@@ -75,12 +75,10 @@ Slots are reused. When a player's name later appears (repeatedly) in a different
 - About 96% of kills have both names resolved; the rest are flagged in `review`.
 - Weapon classes come from the exe's killfeed icon table (27 classes, 0-26; see below). Labels with an `(ico_...)` suffix come from the table only (the art has not been seen on video) and carry the `weapon?` flag. Class 23 (`ico_custom_4`) is a module-defined icon; all 4 sightings are killer = victim. Class 3 (horse charge) kills usually have no killer name: the killer agent is the horse, not the rider.
 - Built for Warband 1.174 / NW 1.210 packets. The message layouts in `nreader.py` were worked out from the game's own reader and checked against it on all four captures (about 400,000 messages, identical); the per-server bit widths are found from each capture (the `calibrating bit widths` step). A message type nobody has seen with a rare flag set makes that one packet unreadable (it is skipped, not mis-read).
-- Not tested on Windows; the exe is built by GitHub Actions.
 
 ## Download and build
 - **Windows exe:** download `nwkills.exe` from the [Releases](../../releases) page. Windows SmartScreen may warn about an unknown publisher (More info > Run anyway); the exe is built from this source by GitHub Actions.
 - **From source:** `python nwkills.py capture.pcapng` (Python 3.10+, no dependencies).
-- **Making a release (maintainer):** `git tag v0.1 && git push --tags`; the `build-windows` workflow builds the exe and attaches it to the release.
 
 ## Privacy
 Captures contain player names and IP addresses. Please do not post whole captures publicly; share the CSV, or a small trimmed capture, when reporting a bug.
