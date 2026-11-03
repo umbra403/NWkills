@@ -13,12 +13,37 @@ def load_roster(path):
     if path and os.path.exists(path):
         for row in csv.DictReader(open(path,encoding='utf-8-sig')): r[int(row['player_id'])-1]=row['name']
     return r
+
+import os as _os
+_MODE = _os.environ.get('NWOBS', '3')
+def _good_scores(raw, mode=None):
+    """Score updates (player, value) from the state block. The server repeats an update in every tick until it is acknowledged, so a real value
+    shows up in several packets within a moment; a value that appears once, or only in packets that did not parse cleanly, is usually a
+    mis-read (random values like 222 or -2615 in the score history made fake teamkills). mode 0 = keep everything (old behaviour)."""
+    mode = _MODE if mode is None else mode
+    if mode == '0':
+        return [(pl, t, v) for t, pl, v, ok in raw]
+    cl = {}
+    for t, pl, v, ok in raw:
+        if mode != '0' and not ok: continue
+        cl.setdefault((pl, v), []).append(t)
+    keep = []
+    for (pl, v), ts in cl.items():
+        ts.sort(); grp = [[ts[0]]]
+        for x in ts[1:]:
+            if x - grp[-1][-1] < 1.0: grp[-1].append(x)
+            else: grp.append([x])
+        for g in grp:
+            if mode == '1' or len(g) >= 2 or (mode == '3' and abs(v) <= 60):
+                keep += [(pl, t, v) for t in g]
+    keep.sort(key=lambda x: x[1])
+    return keep
 def decode(recs,roster=None,local_slot=None,items=None,namer=None):
     roster=roster or {}
     if namer is None: namer=lambda s,t: roster.get(s,s)
     kills=[];last=None
     owner=[]  # (t,agent,slot)
-    t18=[]; miss=[]
+    t18=[]; miss=[]; obs_raw=[]
     obs=collections.defaultdict(list); dm=collections.defaultdict(list); rid=collections.defaultdict(list)
     for r in recs:
         t=r['t']
@@ -41,7 +66,8 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
                 if p==13 and val==1: dm[a].append(t)
                 if p in (6,7): rid[a].append(t)      # rider agents carry properties 6/7; horses do not
             for pl,p,val in tl['players']:
-                if p==0: obs[pl].append((t,val-8192 if val>=4096 else val))
+                if p==0: obs_raw.append((t,pl,val-8192 if val>=4096 else val,r['L']-tl['end']<8 and not r['err']))
+    for pl, tt, vv in _good_scores(obs_raw): obs[pl].append((tt, vv))
     kills=[k for k in kills if any(abs(x-k['t'])<3 for x in dm.get(k['victim'],[]))]
     lastk={}; k2=[]
     for k in kills:      # an agent cannot die twice within a few seconds: drop repeats of the same death message (no bucket edges)

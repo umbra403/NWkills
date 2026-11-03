@@ -17,6 +17,12 @@ def scan_payload(pl, t, rec):
                 seen.add(key)
                 r = rec[(chunk.decode(), m.group(1)[0])]
                 r[0] += 1; r[1] = min(r[1], t); r[2] = max(r[2], t)
+def _plausible_single(name):
+    """A name seen in only one packet is accepted only if it looks like a real player name. Random bytes that happen to match the
+    <0x06><id><length> pattern give strings like m.\"_\\Dt, which used to take over a slot (and all its kills) in one capture."""
+    if len(name) < 6 or '"' in name or '\\' in name: return False
+    al = sum(c.isalnum() for c in name)
+    return al >= 5 and al >= 0.6 * len(name)
 def build_roster(items, min_count=1):
     """items: iterable of (t_seconds, payload). Returns {slot: [(first,last,name,count), ...]} sorted by first sighting (slot = player_id-1)."""
     rec = collections.defaultdict(lambda: [0, 1e18, -1e18])
@@ -24,7 +30,7 @@ def build_roster(items, min_count=1):
         if len(pl) >= 20: scan_payload(pl, t, rec)
     out = collections.defaultdict(list)
     for (name, pid), (c, a, b) in rec.items():
-        if c >= min_count and (c >= 2 or len(name) >= 6): out[pid-1].append((a, b, name, c))
+        if c >= min_count and (c >= 2 or _plausible_single(name)): out[pid-1].append((a, b, name, c))
     return {s: sorted(v) for s, v in out.items()}
 def lookup(roster, slot, t):
     """Name holding this slot at time t: the latest name first seen at or before t (slots are reused when players leave)."""

@@ -115,12 +115,12 @@ def read_messages(pl, prof):
                 if t == 63:
                     if not rd(1, out):
                         rd(32, out); ms.append((c0, cur[0], t, out)); continue
-                    rd(8, out); rd(2, out); rd(16, out); rd(32, out); rd(16, out); rd(11, out); rd(11, out); rd(32, out)
+                    rd(8, out); rd(2, out); rd(16, out); rd(32, out); rd(16, out); rd(10, out); rd(32, out)
                 else:
                     rd(16, out)
                 for _ in range(16): rd(8, out)
                 if t == 0:
-                    rd(32, out); rd(16, out); rd(11, out); rd(11, out)
+                    rd(32, out); rd(16, out); rd(10, out)
                 string(out, 49); string(out, 399)
             elif t in (53, 56):
                 string(out, 49); rd(14, out); rd(14, out); string(out, 49); rd(16, out); string(out, 49); rd(16, out); string(out, 49)
