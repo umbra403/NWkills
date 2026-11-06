@@ -1,0 +1,395 @@
+{
+"source": "Napoleonic Wars module: troops.txt + item_kinds1.txt (troop index = type-5 troop field minus 1, item index = loadout id minus 1)",
+"troops": {
+"89": {
+"name": "trp_british_infantry_nco",
+"flags": [
+183,
+184
+]
+},
+"94": {
+"name": "trp_british_infantry2_nco",
+"flags": [
+191,
+192
+]
+},
+"99": {
+"name": "trp_british_highlander_nco",
+"flags": [
+185,
+186
+]
+},
+"104": {
+"name": "trp_british_foot_guard_nco",
+"flags": [
+187,
+188
+]
+},
+"109": {
+"name": "trp_british_light_infantry_nco",
+"flags": [
+189,
+190
+]
+},
+"117": {
+"name": "trp_british_hussar_nco",
+"flags": [
+193
+]
+},
+"121": {
+"name": "trp_british_light_dragoon_nco",
+"flags": [
+193
+]
+},
+"125": {
+"name": "trp_british_dragoon_nco",
+"flags": [
+193
+]
+},
+"129": {
+"name": "trp_british_horseguard_nco",
+"flags": [
+193
+]
+},
+"145": {
+"name": "trp_french_infantry_nco",
+"flags": [
+164
+]
+},
+"150": {
+"name": "trp_french_infantry2_nco",
+"flags": [
+165
+]
+},
+"155": {
+"name": "trp_french_infantry_vistula_colours",
+"flags": [
+166
+]
+},
+"160": {
+"name": "trp_french_old_guard_nco",
+"flags": [
+167
+]
+},
+"165": {
+"name": "trp_french_voltigeur_colours",
+"flags": [
+168
+]
+},
+"169": {
+"name": "trp_french_hussar_nco",
+"flags": [
+169
+]
+},
+"173": {
+"name": "trp_french_lancer_nco",
+"flags": [
+174
+]
+},
+"177": {
+"name": "trp_french_dragoon_nco",
+"flags": [
+173
+]
+},
+"181": {
+"name": "trp_french_cuirassier_nco",
+"flags": [
+171
+]
+},
+"185": {
+"name": "trp_french_carabineer_nco",
+"flags": [
+170
+]
+},
+"189": {
+"name": "trp_french_grenadier_a_cheval_nco",
+"flags": [
+172
+]
+},
+"204": {
+"name": "trp_prussian_infantry_nco",
+"flags": [
+194
+]
+},
+"209": {
+"name": "trp_prussian_infantry2_nco",
+"flags": [
+195
+]
+},
+"214": {
+"name": "trp_prussian_infantry_kurmark_nco",
+"flags": [
+197
+]
+},
+"219": {
+"name": "trp_prussian_infantry_freikorps_nco",
+"flags": [
+197
+]
+},
+"224": {
+"name": "trp_prussian_infantry_15_nco",
+"flags": [
+196
+]
+},
+"233": {
+"name": "trp_prussian_dragoon_nco",
+"flags": [
+198
+]
+},
+"237": {
+"name": "trp_prussian_hussar_nco",
+"flags": [
+198
+]
+},
+"241": {
+"name": "trp_prussian_landwehr_cav_nco",
+"flags": [
+198
+]
+},
+"257": {
+"name": "trp_russian_opol_nco",
+"flags": [
+175
+]
+},
+"260": {
+"name": "trp_russian_infantry_nco",
+"flags": [
+180,
+181
+]
+},
+"265": {
+"name": "trp_russian_grenadier_nco",
+"flags": [
+176,
+177
+]
+},
+"270": {
+"name": "trp_russian_foot_guard_nco",
+"flags": [
+178,
+179
+]
+},
+"279": {
+"name": "trp_russian_hussar_nco",
+"flags": [
+182
+]
+},
+"283": {
+"name": "trp_russian_uhlan_nco",
+"flags": [
+182
+]
+},
+"290": {
+"name": "trp_russian_dragoon_nco",
+"flags": [
+182
+]
+},
+"294": {
+"name": "trp_russian_horse_guard_nco",
+"flags": [
+182
+]
+},
+"305": {
+"name": "trp_austrian_infantry_nco",
+"flags": [
+199
+]
+},
+"310": {
+"name": "trp_austrian_infantry2_nco",
+"flags": [
+199
+]
+},
+"315": {
+"name": "trp_austrian_grenzer_nco",
+"flags": [
+200
+]
+},
+"320": {
+"name": "trp_austrian_grenadier_nco",
+"flags": [
+200
+]
+},
+"329": {
+"name": "trp_austrian_hussar_nco",
+"flags": [
+201
+]
+},
+"333": {
+"name": "trp_austrian_uhlan_nco",
+"flags": [
+201
+]
+},
+"337": {
+"name": "trp_austrian_light_horse_nco",
+"flags": [
+201
+]
+},
+"341": {
+"name": "trp_austrian_dragoon_nco",
+"flags": [
+201
+]
+},
+"345": {
+"name": "trp_austrian_cuirassier_nco",
+"flags": [
+201
+]
+},
+"356": {
+"name": "trp_rhine_infantry_bavaria_nco",
+"flags": [
+202,
+203
+]
+},
+"361": {
+"name": "trp_rhine_infantry_wurttemberg_nco",
+"flags": [
+211
+]
+},
+"366": {
+"name": "trp_rhine_infantry_saxony_nco",
+"flags": [
+204
+]
+},
+"371": {
+"name": "trp_rhine_infantry_wurttemberg2_nco",
+"flags": [
+212
+]
+},
+"376": {
+"name": "trp_rhine_grenadier_guard_nco",
+"flags": [
+207
+]
+},
+"381": {
+"name": "trp_rhine_light_infantry_hessen_nco",
+"flags": [
+206
+]
+},
+"393": {
+"name": "trp_rhine_uhlan_nco",
+"flags": [
+205
+]
+},
+"397": {
+"name": "trp_rhine_light_dragoon_nco",
+"flags": [
+208
+]
+},
+"401": {
+"name": "trp_rhine_cuirassier_nco",
+"flags": [
+209
+]
+},
+"405": {
+"name": "trp_rhine_garde_du_corps_nco",
+"flags": [
+210
+]
+}
+},
+"items": {
+"183": "itm_britain_colour_33rd_regt",
+"184": "itm_britain_colour_33rd_king",
+"191": "itm_britain_colour_kgl_regt",
+"192": "itm_britain_colour_kgl_king",
+"185": "itm_britain_colour_42nd_regt",
+"186": "itm_britain_colour_42nd_king",
+"187": "itm_britain_colour_2nd_regt",
+"188": "itm_britain_colour_2nd_king",
+"189": "itm_britain_colour_51st_regt",
+"190": "itm_britain_colour_51st_king",
+"193": "itm_britain_colour_blues",
+"164": "itm_flag_france_45e",
+"165": "itm_flag_france_84e",
+"166": "itm_flag_france_vistula",
+"167": "itm_flag_france_grenadiers",
+"168": "itm_flag_france_15",
+"169": "itm_flag_france_hussard",
+"174": "itm_flag_france_lancier",
+"173": "itm_flag_france_dragon",
+"171": "itm_flag_france_cuirassier",
+"170": "itm_flag_france_carab",
+"172": "itm_flag_france_cheval",
+"194": "itm_prussia_colour_infantry",
+"195": "itm_prussia_colour_infantry2",
+"197": "itm_prussia_colour_landwehr",
+"196": "itm_prussia_colour_guard",
+"198": "itm_prussia_colour_hussard",
+"175": "itm_flag_russia_opolcheniye",
+"180": "itm_flag_russia_simbirsk_color",
+"181": "itm_flag_russia_simbirsk_white",
+"176": "itm_flag_russia_pavlovsk_color",
+"177": "itm_flag_russia_pavlovsk_white",
+"178": "itm_flag_russia_preobragenskiy_color",
+"179": "itm_flag_russia_preobragenskiy_white",
+"182": "itm_flag_russia_kyiv_dragoon",
+"199": "itm_austria_colour_leibfahne",
+"200": "itm_austria_colour_ordinarfahne",
+"201": "itm_austria_colour_ordinarfahne_cav",
+"202": "itm_bavarian_flag_national",
+"203": "itm_bavarian_flag_regimental",
+"211": "itm_wurttemberg_flag_infantry",
+"204": "itm_saxon_flag_infantry",
+"212": "itm_wurttemberg_flag_infantry2",
+"207": "itm_westphalian_flag_infantry",
+"206": "itm_hessian_flag_infantry",
+"205": "itm_saxon_flag_uhlan",
+"208": "itm_baden_flag_dragoon",
+"209": "itm_westphalian_flag_cuirassier",
+"210": "itm_saxon_flag_garde"
+}
+}

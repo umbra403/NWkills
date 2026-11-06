@@ -120,6 +120,19 @@ def main(argv=None):
     with open(os.path.splitext(out)[0].replace('_kills', '') + '_rounds.csv', 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f); w.writerow(['round', 'start_s', 'end_s', 'length_s', 'started_by', 'tickets_zero_at_s', 'tickets_zero_team', 'kills_after_tickets_zero', 'kind', 'death_msgs', 'method', 'review'])
         for r in rounds: w.writerow([r['n'], round(r['start']), round(r['end']), round(r['end'] - r['start']), r['signals'], r['tickets_zero'][0] if r['tickets_zero'] else '', r['tickets_zero'][1] if r['tickets_zero'] else '', r.get('kills_after_zero', ''), r.get('kind', ''), r['kills'], r['method'], r['review']])
+    # --- flagbearers (separate file): who spawned carrying a flag, per round
+    from . import flags
+    fb_path = os.path.splitext(out)[0].replace('_kills', '') + '_flagbearers.csv'
+    kind = flags.server_kind(recs)
+    ftab = flags.load_table(here, kind)
+    if ftab:
+        fb = flags.flagbearers(recs, ftab, rounds, round_of, rkind, namer)
+        with open(fb_path, 'w', newline='', encoding='utf-8-sig') as f:
+            w = csv.writer(f); w.writerow(['round', 'round_kind', 'player', 'player_slot', 'class', 'flag', 'spawns', 'first_spawn_s', 'first_spawn_mm:ss', 'last_spawn_s', 'review'])
+            for r in fb: w.writerow(r[:7] + [r[7], '%d:%02d' % divmod(int(r[7]), 60), r[8], r[9]])
+        print('%d flagbearer rows -> %s' % (len(fb), fb_path))
+    else:
+        print('flagbearers: skipped (no troop/item table for this server type)')
     known = set(WCODE)
     with open(out, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f); w.writerow(['round', 'round_kind', 'time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'respawn_s', 'review', 'killer_slot', 'victim_slot'])

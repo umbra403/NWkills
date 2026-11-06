@@ -10,6 +10,7 @@ class, and teamkills, split into rounds. No server access needed. Works for NW a
    - `capture_kills.csv` - one row per death/kill.
    - `capture_kills_players.csv` - totals per player, plus per-round columns.
    - `capture_rounds.csv` - the detected rounds.
+   - `capture_flagbearers.csv` - who spawned carrying a flag, per round.
 
 Options: `--out file.csv`, `--port N` (server UDP port, normally auto-detected), `--me NAME` (part of your own name),
 `--jobs N` (CPU cores, default all), `--cache file.pkl` (keep decoded packets so you can re-run the kill logic quickly), `--limit N` (test on the first N packets).
@@ -53,6 +54,16 @@ How round starts are found, in order of preference:
 - **Warm-up rule:** a segment is a warm-up when a map change is followed by a reset, when two resets come less than 60 s apart, or when an admin says "reset and live" (also "rest/restart ... live") inside it.
 - **Tickets (NWE):** the team-ticket event adds `tickets_zero_at_s` (round decided) and `kills_after_tickets_zero`.
 - **Fallback** (no such chat lines): activity lulls and map-load signals.
+
+## Flagbearers file
+`round, round_kind, player, player_slot, class, flag, spawns, first_spawn_s, first_spawn_mm:ss, last_spawn_s, review`
+One row per player, round, class and flag. The class comes from the spawn message's troop id and the module's troops.txt (troop index = field minus 1); the flag from item_kinds1.txt. Both tables are bundled (`data/flag_troops_nw.json`, `data/flag_troops_nwe.json`).
+- **NW:** a spawn counts when the class can carry a flag (NCO classes, French `colours` classes) AND a flag item of that class is in the spawned loadout.
+- **NWE:** it has dedicated `*_flag_bearer` classes; every spawn of one counts. `flag` is filled in when the loadout shows the flag item, otherwise `unknown` (about 40 % of NWE rows on the Tuesday capture).
+- The server type is chosen from the largest loadout item id in the capture (above 1023 = NWE); another module needs its own two table files.
+- Loadout item ids are only trusted for the flag itself, and only together with the class: the servers' item tables differ from the module files for armour, so armour/other items are not decoded.
+- Misses: your own respawns (no spawn message, only a type-18 update), and agents already on the map when you connected. Check on the two NWEVENT captures (two viewpoints of one event): 23 of 28 (player, flag) pairs identical, the rest are roster-slot differences.
+- `review = name?` means the player's name could not be resolved.
 
 ## Weapon classes (from the exe)
 The client picks the killfeed icon with a jump table on the 5-bit weapon class: 0 headshot, 1 couched lance, 2 punch, 3 horse impact, 4 bow, 5 crossbow (the module draws muskets with it), 6 thrown axe, 7 thrown knife, 8 javelin, 9 thrown stone, 10 pistol, 11 musket, 12 one-handed sword, 13 two-handed sword, 14 one-handed axe, 15 two-handed axe, 16 blunt (mace/club), 17 spear (bayonet), 18 morningstar, 19 maul (hammer), 20-26 custom icons 1-7 (20 cannonball, 21 canister, 22 explosion seen on video). Values above 26 draw no icon.
