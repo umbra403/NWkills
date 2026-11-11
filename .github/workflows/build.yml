@@ -1,6 +1,7 @@
 name: build-windows
 on:
   push:
+    branches: ['**']
     tags: ['v*']
   workflow_dispatch:
 permissions:
