@@ -5,13 +5,15 @@ PAT = re.compile(rb'\x06(.)([\x03-\x28])\x00', re.S)
 PRINT = bytes(range(0x20, 0x7f))
 def _shift(b, s):
     return b if s == 0 else (int.from_bytes(b, 'little') >> s).to_bytes(len(b), 'little')
-def scan_payload(pl, t, rec):
+PAT_ALT = re.compile(rb'[\x03\x43\x83\xc3](.)([\x03-\x28])\x00', re.S)     # same record under another message type (seen in one recording where the other had 0x06)
+def scan_payload(pl, t, rec, pat=None, only=None):
     seen = set()
     for k in range(8):
         b = _shift(pl, k)
-        for m in PAT.finditer(b):
+        for m in (pat or PAT).finditer(b):
             L = m.group(2)[0]; s = m.end(); chunk = b[s:s+L]
             if len(chunk) == L and not chunk.translate(None, PRINT):
+                if only is not None and chunk.decode() not in only: continue
                 key = (chunk, m.group(1)[0])
                 if key in seen: continue
                 seen.add(key)
@@ -26,8 +28,16 @@ def _plausible_single(name):
 def build_roster(items, min_count=1):
     """items: iterable of (t_seconds, payload). Returns {slot: [(first,last,name,count), ...]} sorted by first sighting (slot = player_id-1)."""
     rec = collections.defaultdict(lambda: [0, 1e18, -1e18])
+    items = list(items)
     for t, pl in items:
         if len(pl) >= 20: scan_payload(pl, t, rec)
+    # Second pass: the join record of a player can reach one recording as another message type than the other (the same bytes after a 0x03
+    # header instead of 0x06). Chat lines use that header too, so such a record is only believed for a name already seen as a player name.
+    known = set(n for (n, pid), (c, a, b) in rec.items() if c >= 2 or _plausible_single(n))
+    items = list(items)
+    if known:
+        for t, pl in items:
+            if len(pl) >= 20: scan_payload(pl, t, rec, PAT_ALT, known)
     out = collections.defaultdict(list)
     for (name, pid), (c, a, b) in rec.items():
         if c >= min_count and (c >= 2 or _plausible_single(name)): out[pid-1].append((a, b, name, c))
@@ -53,9 +63,9 @@ def retire_moved(roster):
     for nm, lst in firsts.items():
         lst.sort()
         for (f1, s1, c1), (f2, s2, c2) in zip(lst, lst[1:]):
-            if s1 == s2 or c2 < 2: continue      # one-off sightings can be coincidental byte patterns: need a repeated sighting
+            if s1 == s2 or (c2 < 2 and not _plausible_single(nm)): continue      # a one-off sighting can be a coincidental byte pattern: it must at least look like a real name
             cur = [x for x in roster[s1] if x[0] <= f2 + 5]
-            if cur and cur[-1][2] == nm and not any(x[0] > f2 and x[2] != nm for x in roster[s1]):
+            if cur and cur[-1][2] == nm:      # also when another name takes the slot later: the stretch in between is unknown
                 if not any((not x[2]) and abs(x[0] - f2) < 1 for x in roster[s1]):
                     roster[s1] = sorted(roster[s1] + [(f2, f2, '', 0)])
                 since[s1] = min(since.get(s1, 1e18), f2)
