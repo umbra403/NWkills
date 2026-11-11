@@ -17,7 +17,8 @@ def death_type(e, burst=False):
         return 'world (team swap / left server)'
     if ks is not None and ks == vs:
         if e['weapon'].startswith('headshot'): return 'self-inflicted: fall'                       # confirmed by chat markers in a test capture
-        if e['weapon'].startswith('fists'): return 'self-inflicted: suicide (or admin slay)'    # slay and suicide share the packets and the killfeed icon
+        if e['weapon'].startswith('fists'): return 'self-inflicted: suicide (no admin line)'    # slay and suicide share the packets and the killfeed icon
+        if e['weapon']=='drowning': return 'self-inflicted: drowning'                        # confirmed on video (own drowning, capture 2026-11-11)
         return 'self-inflicted (other)'
     if e.get('horse'): return 'horse death (player-owned mount)'     # victim agent is the player's horse (no rider properties); not a player death, no score
     if e.get('mode') != 2:
@@ -101,11 +102,25 @@ def main(argv=None):
     items = json.load(open(os.path.join(here, 'data', 'items.json')))
     ev, ls = decode(recs, None, me, items, namer)
     need = set(e[r + '_slot'] for e in ev for r in ('killer', 'victim') if e[r + '_slot'] is not None and e[r + '_slot'] >= 0 and not lookup(ros, e[r + '_slot'], e['time']))
+    # a slot whose first known name only shows up after an event that used the slot, and that name held ANOTHER slot earlier (the player rejoined into this
+    # slot): the earlier occupant of this slot is unknown, not that name
+    _first = {}
+    for sl_, v_ in ros.items():
+        for x_ in v_:
+            if x_[2] and (x_[2] not in _first or x_[0] < _first[x_[2]][0]): _first[x_[2]] = (x_[0], sl_)
+    early = set()
+    for e in ev:
+        for r in ('killer', 'victim'):
+            s_ = e[r + '_slot']
+            if s_ is None or s_ < 0 or not ros.get(s_) or not ros[s_][0][2] or ros[s_][0][0] <= e['time'] + 5: continue
+            nm_ = ros[s_][0][2]
+            if any(x[2] == nm_ and x[0] < ros[s_][0][0] - 1 for sl_, v_ in ros.items() if sl_ != s_ for x in v_): early.add(s_)
+    need |= early
     if need and flow_items is None:
         _i, _pk = read_pcapng(a.pcap); _k, _f = find_server_flow(_pk, a.port); flow_items = [(ts - _f[0][0], pl) for ts, pl in _f]
     if need and flow_items:
         from .roster import fill_roster
-        fill_roster(ros, flow_items, need, since=_since)
+        fill_roster(ros, flow_items, need, since=_since, early=early)
         ev, ls = decode(recs, None, me, items, namer)
     for e in ev:
         if e['killer_agent'] is not None and e['killer_agent'] < 0: e['killer'] = '(world)'
@@ -196,6 +211,9 @@ def main(argv=None):
     sc0 = {}; sc1 = {}
     BASE = 6.0       # the scoreboard reset lands a few seconds after the detected round start
     byslot = collections.defaultdict(list)
+    for e in ev:
+        if e['killer_agent'] is not None and e['killer_agent'] < 0 and e['victim_slot'] is not None and e['victim_slot'] >= 0 and e['respawn'] and not e.get('admin'):
+            byslot[e['victim_slot']].append((e['time'], -1))      # a team swap (killer-less death, the player respawns) costs 1 point; leaving the server does not
     for e in ev:
         if e['killer_slot'] is None or e['killer_slot'] < 0: continue
         dt = death_type(e, False)

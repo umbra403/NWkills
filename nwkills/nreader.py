@@ -9,7 +9,7 @@ class Unknown(Exception):
 # fixed body layouts; strings are server-specific widths (resolved from the profile)
 F = {
     1: (1, 2, 3),
-    2: (3, 5, 13, 13, 13, 13),         # second field = faction-count width (5 on NW), like the two fields of types 0 and 63
+    2: (3, 5, 13, 13, 13, 13),         # second field = faction-count width (5 on NW and NWE, confirmed on 107 queued packets), like the two fields of types 0 and 63
     5: (10, 8, 'S324', 3, 8, 32) + ('IA',)*11 + (10, 10, 51, 10, 7, 7, 7, 1, 'T5X'),
     6: (10, 51, 27, 12, 10, 'X328', 32, 'X328', 32),
     9: (10, 10, 6, 10, 10, 10, 12, 12, 12, 12),

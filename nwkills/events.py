@@ -5,7 +5,7 @@ WCODE={0:'headshot',1:'melee: couched lance (cavalry)',2:'fists (punch)',3:'cava
  5:'firearm: musket/rifle',6:'thrown axe (ico_axethrow)',7:'thrown knife (ico_knifethrow)',8:'javelin (ico_javelin)',9:'thrown stone (ico_stonethrow)',
  10:'firearm: pistol',11:'firearm: musket (ico_musket)',12:'melee: sword/sabre',13:'melee: two-handed sword (ico_swordtwo)',14:'melee: one-handed axe (ico_axeone)',
  15:'melee: two-handed axe (ico_axetwo)',16:'melee: mace/club',17:'melee: bayonet/spear',18:'melee: morningstar (ico_morningstar)',19:'melee: hammer/mallet',
- 20:'artillery: cannonball',21:'artillery: shrapnel/canister',22:'artillery: explosion',23:'special: custom icon 4 (ico_custom_4)',
+ 20:'artillery: cannonball',21:'artillery: shrapnel/canister',22:'artillery: explosion',23:'drowning',
  24:'special: custom icon 5 (ico_custom_5)',25:'special: custom icon 6 (ico_custom_6)',26:'special: custom icon 7 (ico_custom_7)'}
 MAXSLOT=250
 import re
@@ -198,8 +198,8 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             if base is None: continue
             if abs(w[0]-base)>n and abs(w[0])<=n: base=0      # reset to 0 that we did not see (b[-1] is last round's value)
             cur=base
-            for x in w:                                      # follow the changes while they can come from these kills; stop at a reset to 0
-                if abs(x-cur)>=2 and abs(cur)>=2 and -1<=x<=1: break
+            for xi,x in enumerate(w):                        # follow the changes while they can come from these kills; stop at a later reset to 0 (the first change after the kills is theirs: 3 -> 1 after two kills is two teamkills)
+                if xi and abs(x-cur)>=2 and abs(cur)>=2 and -1<=x<=1: break
                 if abs(x-base)>n: break
                 cur=x
             D=cur-base
@@ -229,10 +229,15 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
     rows=[e for e in out if e['wcode']==3 and e['mode']==2 and (e['killer_slot'] is None or e['killer_slot']<0)]
     todo=list(rows)
     while todo:
-        cands={id(e):[(pl,to,d) for pl,L in left.items() for to,d in L if e['time']-0.3<=to<=e['time']+2.5] for e in todo}
-        one=[e for e in todo if len(cands[id(e)])==1]
-        if not one: break
-        e=one[0]; pl,to,d=cands[id(e)][0]
+        pick=None
+        for lo,hi in ((0.3,0.5),(0.3,2.5)):         # first the changes that arrive with the kill itself, then the wider window
+            for e in todo:
+                c=[(pl,to,d) for pl,L in left.items() for to,d in L if e['time']-lo<=to<=e['time']+hi]
+                if c and len({x[0] for x in c})==1:   # one player (he may have two changes in the window: the nearest is taken)
+                    pick=(e,min(c,key=lambda x:abs(x[1]-e['time']))); break
+            if pick: break
+        if not pick: break
+        e,(pl,to,d)=pick
         left[pl].remove((to,d)); todo.remove(e)
         e['killer_slot']=pl; e['killer']=namer(pl,e['time']); e['teamkill']='yes' if d<0 else ''; e['late']=list(e['late'])+['killer-from-score']; e['burst']=False
     return out,local_slot

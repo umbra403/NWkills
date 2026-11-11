@@ -71,11 +71,12 @@ def retire_moved(roster):
                 since[s1] = min(since.get(s1, 1e18), f2)
     return since
 
-def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0, since=None):
+def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0, since=None, early=()):
     """Names that were never announced with the usual join record (e.g. you joined later) still show up next to the player id in
     chat/other records. For slots that need a name, take the printable string that repeats at >=2 separate moments."""
     since = since or {}
-    need = [s for s in need_slots if s is not None and s >= 0 and (s not in roster or s in since)]
+    early = set(early)       # slots whose first known name is provably a later occupant (that name held another slot before): look for an earlier occupant, keep the later names
+    need = [s for s in need_slots if s is not None and s >= 0 and (s not in roster or s in since or s in early)]
     if not need: return roster
     cls = bytes(sorted(set(s + 1 for s in need if s + 1 < 256)))
     if not cls: return roster
@@ -93,6 +94,9 @@ def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0, since=None)
                     nm = ch.decode()
                     if sum(c.isalnum() for c in nm) >= 4 and (m.group(1)[0], nm) not in done:
                         done.add((m.group(1)[0], nm)); seen[(m.group(1)[0], nm)].append(t)
+    for (pid, nm) in list(seen):
+        if pid - 1 in early and pid - 1 not in since and roster.get(pid - 1):
+            if min(seen[(pid, nm)]) >= roster[pid - 1][0][0] - 1 or nm in [x[2] for x in roster[pid - 1]]: del seen[(pid, nm)]       # only names sighted before the first known one are new
     best = {}
     for (pid, nm), ts in seen.items():
         ts.sort(); clusters = 1 + sum(1 for a, b in zip(ts, ts[1:]) if b - a > gap)
@@ -101,5 +105,9 @@ def fill_roster(roster, items, need_slots, min_clusters=2, gap=10.0, since=None)
             sc = (min(clusters, 2) if not tagged else clusters + 1, 1 if tagged else 0, len(ts))
             if pid not in best or sc > best[pid][0]: best[pid] = (sc, nm, ts[0], ts[-1], len(ts))
     for pid, (sc, nm, a, b, c) in best.items():
-        roster[pid - 1] = sorted([x for x in roster.get(pid - 1, []) if pid - 1 in since] + [(a, b, nm, c)])
+        old = roster.get(pid - 1, [])
+        if pid - 1 in early and pid - 1 not in since:
+            roster[pid - 1] = sorted(old + [(a, b, nm, c)])
+        else:
+            roster[pid - 1] = sorted([x for x in old if pid - 1 in since] + [(a, b, nm, c)])
     return roster

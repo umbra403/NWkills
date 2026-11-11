@@ -33,7 +33,8 @@ A 2-hour capture (~115k packets) takes about 1-3 minutes.
 | `AI/horse death` | victim is a bot or unowned mount. Not a player death; counted as the killer's `ai_kills` |
 | `world (team swap / left server)` | killer-less death with weapon code 0 (shown as `headshot`). Confirmed for your own team swap (test capture with chat markers); a player leaving the server looks the same, hence the clusters at the end of events. Your own disconnect death is not in the capture |
 | `self-inflicted: fall` | killer = victim with weapon class 0. Confirmed by chat markers (2 falls). Score -1 |
-| `self-inflicted: suicide (or admin slay)` | killer = victim with weapon class 2 (fist icon). Confirmed for suicide (2 cases); admin slays use the same packets and icon, so they cannot be told apart. Score -1 (counted as a teamkill) |
+| `self-inflicted: drowning` | killer = victim with weapon class 23 (icon 4). Confirmed on video. Score -1 |
+| `self-inflicted: suicide (no admin line)` | killer = victim with weapon class 2 (fist icon). Confirmed for suicide (2 cases); admin slays use the same packets and icon; they are told apart only by the server's `Slayed Player` line (see below), so this label means no such line was seen. Score -1 (counted as a teamkill) |
 | `non-blow death (leave/class change?)` | death message without a blow and no known killer |
 
 The exact causes inside the last few types are still provisional (no capture with known fall / drown / class change events yet).
@@ -41,6 +42,7 @@ The exact causes inside the last few types are still provisional (no capture wit
 ## Players file
 - `kills` = kills minus teamkills over all non-warm-up rounds (like the scoreboard). `deaths`, `teamkills` over the same rounds. `ai_kills` = bot kills.
 - `score_at_capture_start` / `score_at_capture_end`: scoreboard values the server sends when you join and on every change. `score_gap` = scoreboard change minus what was recorded as kills/teamkills (0 = nothing missed; positive = score we did not see as kills, e.g. kills before you joined). Scores are read only from packets that parsed to the end (the big map-change blocks give garbage values). The scoreboard reset after a round start can land more than a minute late (seen: 64 s); when the score jumps to 0 (or -1 / 1) by 2 or more in the first 2 minutes of a round, counting starts from that value. A player whose score was never re-sent after the reset (first value of the round fits counting from 0, not from last round's value) is counted from 0. Rounds with a jump of more than 15 inside the round (player rejoined / slot reused) are skipped. Several kills by one player within 2.5 s share one scoreboard change: the number of teamkills among them is taken from the total change, which of them are teamkills is a guess (victims with the killer's regiment prefix first) and those rows carry `teamkill?(burst)` in `review`. Remaining gaps are normally 0 to +-2. Teamkills are read from the same score changes: a jump of 2 or more to 0 is a reset, not a teamkill.
+- A team swap (a killer-less death after which the player respawns) costs the player 1 point and is counted as such in `score_gap` (it is not a kill or a death in the totals). Leaving the server costs nothing.
 - Per round, four columns `R<n>(<kind>)_kills|_deaths|_teamkills|_score_gap`. Per-round `kills` do NOT subtract teamkills (plain counts). Warm-up rounds keep their columns but are left out of the overall totals.
 - Not counted in totals: horse deaths, `no-blow death` rows, deaths of `(AI)` victims (those go to the killer's `ai_kills`).
 
@@ -74,7 +76,7 @@ Slots are reused. When a player's name later appears (repeatedly) in a different
 
 ## Known limits
 - About 96% of kills have both names resolved; the rest are flagged in `review`.
-- Weapon classes come from the exe's killfeed icon table (27 classes, 0-26; see below). Labels with an `(ico_...)` suffix come from the table only (the art has not been seen on video) and carry the `weapon?` flag. Class 23 (`ico_custom_4`) is a module-defined icon; all 4 sightings are killer = victim. Class 3 (horse charge) kills usually have no killer name: the killer agent is the horse, not the rider.
+- Weapon classes come from the exe's killfeed icon table (27 classes, 0-26; see below). Labels with an `(ico_...)` suffix come from the table only (the art has not been seen on video) and carry the `weapon?` flag. Class 23 (`ico_custom_4`) is drowning: confirmed on video (a player drowning himself; the capture has exactly one such row, killer = victim, score -1). Weapon `drowning`, death type `self-inflicted: drowning`. Class 3 (horse charge) kills usually have no killer name: the killer agent is the horse, not the rider.
 - Built for Warband 1.174 / NW 1.210 packets. The message layouts in `nreader.py` were worked out from the game's own reader and checked against it on all four captures (about 400,000 messages, identical); the per-server bit widths are found from each capture (the `calibrating bit widths` step). A message type nobody has seen with a rare flag set makes that one packet unreadable (it is skipped, not mis-read).
 - Not tested on Windows; the exe is built by GitHub Actions.
 
@@ -108,6 +110,6 @@ The server prints a text line for admin actions. The tool reads three of them an
 | `admin: slayed everyone` | `X Slayed Everyone.` | every self-death or killer-less death in that moment |
 | `admin: swapped everyone to spectators` | `X Swapped Everyone to Spectators` | the killer-less deaths in that moment |
 
-A fist self-death with no such line stays `self-inflicted: suicide (or admin slay)`. Other lines (bans, beacons) are not used.
+A fist self-death with no such line is `self-inflicted: suicide (no admin line)`. Checked on 8 captures: none of 232 such rows has any other admin line for the victim within 15 s (6 are followed by `Revived Player`, 2 by `Toggled Beacon`). Other lines (bans, beacons) are not used.
 
-A cavalry charge kill whose horse has no known owner is credited to the one player whose score changes by 1 at that moment and is not explained by one of that player's own kills, if there is exactly one (`review`: `name-from-later-data(killer-from-score)`); otherwise the killer stays `(AI)`. Artillery volleys that produce no score update count as half teamkills (the server only sends a score when it changes).
+A cavalry charge kill whose horse has no known owner is credited to the one player whose score changes by 1 at that moment (first within 0.5 s of the kill, then within 2.5 s) and is not explained by one of that player's own kills, if all such changes belong to one player (`review`: `name-from-later-data(killer-from-score)`); otherwise the killer stays `(AI)`. Artillery volleys that produce no score update count as half teamkills (the server only sends a score when it changes).
