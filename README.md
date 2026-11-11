@@ -54,7 +54,7 @@ Kinds: `pre-live` (from capture start until the first detected start), `warm-up`
 How round starts are found, in order of preference:
 - **Server messages (preferred):** the server's own chat lines "Changed the map to ..." (map load) and "Has reset the Map." (admin reset, also a type-41 marker). Admin pattern: map change = warm-up round (friendly fire off), then reset = LIVE round.
 - **Restarts with no reset line:** the server prints "Friendly fire is now on" a fixed delay (parsed from the "Friendly fire will turn back on after N seconds" line; 30 s on NWE, 20 s early on Wed) after every round start; start = that time minus the delay. This found the Thursday restarts at 3:49 / 18:18 and the Friday one at 5:54.
-- **Warm-up rule:** a segment is a warm-up when a map change is followed by a reset, when two resets come less than 60 s apart, or when an admin says "reset and live" (also "rest/restart ... live") inside it.
+- **Warm-up rule:** a segment is a warm-up when it starts with a map change (a round only goes live with an admin reset; the review flag says whether a reset followed), when two resets come less than 60 s apart, or when an admin says "reset and live" or "Live on Reset!" (also "rest/restart ... live") inside it.
 - **Tickets (NWE):** the team-ticket event adds `tickets_zero_at_s` (round decided) and `kills_after_tickets_zero`.
 - **Fallback** (no such chat lines): activity lulls and map-load signals.
 

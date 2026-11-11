@@ -160,7 +160,7 @@ def live_calls(recs):
     """Times of admin lines announcing a restart ('reset and live', 'rest and live', 'reset et puis live' ...).
     A segment that contains one is a warm-up: the admin restarts the round right after it."""
     import re
-    pat = re.compile(r'\*Admin[^:]*:.*\b(re?s?et|rest|restart)\b.*\blive\b', re.I)
+    pat = re.compile(r'\*Admin[^:]*:.*(\b(re?s?et|rest|restart)\b.*\blive\b|\blive\b.*\b(re?s?et|rest|restart)\b)', re.I)       # 'reset and live' and 'Live on Reset!'
     out = []; last = -99
     for r in recs:
         for tx in r.get('txt', ()):
@@ -183,10 +183,11 @@ def detect_server(recs, ev, series=None):
         nxt = kinds[i + 1] if i + 1 < len(kinds) else None
         e_next = starts[i + 1] if i + 1 < len(starts) else None
         said = i > 0 and any(s0 <= c < e for c in calls)         # admin announced 'reset and live' inside this segment
-        warm = (kinds[i] == 'map' and nxt == 'reset') or (kinds[i] == 'reset' and nxt == 'reset' and e_next - s0 < 60) or (said and nxt is not None)   # map change (or quick reset) followed by the real admin reset = warm-up round
+        warm = (kinds[i] == 'map') or (kinds[i] == 'reset' and nxt == 'reset' and e_next - s0 < 60) or (said and nxt is not None)   # map change (or quick reset) followed by the real admin reset = warm-up round
         live = not warm and kinds[i] != 'capture start'
         rev = []
-        if warm: rev.append('not live (warm-up before admin reset): dud?')
+        if warm and kinds[i] == 'map' and nxt != 'reset': rev.append('not live (map change, no admin reset followed): dud?')
+        elif warm: rev.append('not live (warm-up before admin reset): dud?')
         elif kinds[i] == 'capture start': rev.append('capture start (before first map change/reset)')
         if nk < 25: rev.append('few kills (%d)' % nk)
         out.append(dict(n=i + 1, start=s0, end=e, kills=nk, kills_after_zero=kz if z else '',
