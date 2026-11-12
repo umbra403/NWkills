@@ -16,6 +16,13 @@ Options: `--out file.csv`, `--port N` (server UDP port, normally auto-detected),
 `--jobs N` (CPU cores, default all), `--cache file.pkl` (keep decoded packets so you can re-run the kill logic quickly), `--limit N` (test on the first N packets).
 A 2-hour capture (~115k packets) takes about 1-3 minutes.
 
+## The window (`nwkills-gui.exe`)
+Open or drop a `.pcapng`; the **Packets** tab lists the server's packets Wireshark-style (regex display filter, message tree and hex dump of the selected packet; "Index message types" lets the filter search message types too).
+**Options** mirrors the command line (port, your name, worker processes, cache, packet limit, output folder) and shows the equivalent command. **Convert** runs the same pipeline as the command line, with a stage bar and an overall bar, and writes the same CSV files.
+**Results** has one tab per CSV. Click a column label to sort; the box under each label is a regular expression for that column (all boxes must match; the "Ignore case" box applies to all). On Kills, the round chips pick any combination of Live, Pre-live, Pre-live + live, Warm-up and single rounds.
+Select cells (drag, Shift/Ctrl, or the row numbers) and press Ctrl+C: they are copied as tab-separated text that pastes into Excel, Sheets or a CSV editor ("Copy with headers" adds the header row). "Export shown rows" saves exactly what the table shows, in its current order and columns; "Show in Packets" jumps from a kill to the packet list.
+Built with PySide6 (LGPL-3.0). From source: `pip install -r requirements-gui.txt`, then `python nwkills_gui.py [capture.pcapng]`.
+
 ## Kills file columns
 `round, round_kind, time_s, mm:ss, killer, victim, weapon, teamkill, death_type, respawn_s, review, killer_slot, victim_slot`
 - `time_s`: seconds since capture start (video time = time_s + your capture/recording offset).
@@ -81,7 +88,7 @@ Slots are reused. When a player's name later appears (repeatedly) in a different
 - Not tested on Windows; the exe is built by GitHub Actions.
 
 ## Download and build
-- **Windows exe:** download `nwkills.exe` from the [Releases](../../releases) page. Windows SmartScreen may warn about an unknown publisher (More info > Run anyway); the exe is built from this source by GitHub Actions.
+- **Windows exe:** download `nwkills.exe` (command line) or `nwkills-gui.exe` (window) from the [Releases](../../releases) page. Windows SmartScreen may warn about an unknown publisher (More info > Run anyway); the exe is built from this source by GitHub Actions.
 - **From source:** `python nwkills.py capture.pcapng` (Python 3.10+, no dependencies).
 - **Making a release (maintainer):** `git tag v0.1 && git push --tags`; the `build-windows` workflow builds the exe and attaches it to the release.
 

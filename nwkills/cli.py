@@ -56,6 +56,14 @@ def main(argv=None):
     ap.add_argument('--limit', type=int, help='only decode the first N packets (test)')
     a = ap.parse_args(argv)
     if not a.pcap: ap.error('give the .pcapng capture to read (or drag it onto nwkills.exe)')
+    try: run(a)
+    except RuntimeError as ex: sys.exit(str(ex))
+
+class Cancelled(Exception): pass
+
+def run(a, log=print, progress=lambda stage, frac: None):
+    """The whole pipeline. `a` needs: pcap, out, port, me, jobs, cache, limit. Returns the paths of the CSV files written.
+    progress(stage, fraction 0..1 inside that stage) may raise Cancelled to stop."""
     from .pcap import read_pcapng
     from .roster import build_roster, lookup
     from .events import decode, WCODE
@@ -63,31 +71,33 @@ def main(argv=None):
     cache = None; flow_items = None
     if a.cache and os.path.exists(a.cache):
         import pickle
-        _c = pickle.load(open(a.cache, 'rb')); recs, ros = _c[0], _c[1]; flow_items = _c[2] if len(_c) > 2 else None; print('loaded %d decoded packets from %s' % (len(recs), a.cache))
+        _c = pickle.load(open(a.cache, 'rb')); recs, ros = _c[0], _c[1]; flow_items = _c[2] if len(_c) > 2 else None; log('loaded %d decoded packets from %s' % (len(recs), a.cache))
     else:
-        print('reading capture ...'); ifs, pk = read_pcapng(a.pcap)
+        progress('read', 0.0); log('reading capture ...'); ifs, pk = read_pcapng(a.pcap); progress('read', 1.0)
         key, flow = find_server_flow(pk, a.port)
-        if not flow: sys.exit('could not find the game server flow in the capture (try --port)')
-        print('server flow %s:%d -> %s:%d, %d packets' % (key[0], key[1], key[2], key[3], len(flow)))
+        if not flow: raise RuntimeError('could not find the game server flow in the capture (try --port)')
+        log('server flow %s:%d -> %s:%d, %d packets' % (key[0], key[1], key[2], key[3], len(flow)))
         if a.limit: flow = flow[:a.limit]
         t0 = flow[0][0]
         flow_items = [(ts - t0, pl) for ts, pl in flow]
         ros = build_roster(flow_items)
-        print('%d player names found' % sum(len(v) for v in ros.values()))
+        log('%d player names found' % sum(len(v) for v in ros.values()))
         from . import decoder
-        print('calibrating bit widths for this server ...')
-        prof = decoder.calibrate([pl for ts, pl in flow[:60000]], log=lambda m: print(m, flush=True))
+        progress('roster', 1.0); log('calibrating bit widths for this server ...')
+        prof = decoder.calibrate([pl for ts, pl in flow[:60000]], log=log)
         jobs = [(k, ts - t0, pl) for k, (ts, pl) in enumerate(flow) if len(pl) > 12]
         recs = []
         with mp.Pool(a.jobs, initializer=_init, initargs=(prof,)) as p:
             for i, r in enumerate(p.imap(_work, jobs, chunksize=32)):
                 recs.append(r)
-                if i % 5000 == 0: print('  decoded %d / %d packets  (%.0f s)' % (i, len(jobs), time.time() - t), flush=True)
+                if i % 200 == 0: progress('decode', i / max(1, len(jobs)))
+                if i % 5000 == 0: log('  decoded %d / %d packets  (%.0f s)' % (i, len(jobs), time.time() - t))
         good = sum(1 for r in recs if r['tail'] and r['L'] - r['tail']['end'] < 8)
-        print('%d/%d packets parsed cleanly' % (good, len(recs)))
+        progress('decode', 1.0); log('%d/%d packets parsed cleanly' % (good, len(recs)))
         if a.cache:
             import pickle
             pickle.dump((recs, ros, flow_items), open(a.cache, 'wb'))
+    progress('events', 0.0)
     from .roster import retire_moved
     _since = retire_moved(ros)
     def namer(s, tt):
@@ -124,6 +134,7 @@ def main(argv=None):
         ev, ls = decode(recs, None, me, items, namer)
     for e in ev:
         if e['killer_agent'] is not None and e['killer_agent'] < 0: e['killer'] = '(world)'
+    progress('rounds', 0.0)
     from .rounds import detect, round_of
     def rkind(rs, t):
         n = round_of(rs, t)
@@ -148,9 +159,10 @@ def main(argv=None):
         with open(fb_path, 'w', newline='', encoding='utf-8-sig') as f:
             w = csv.writer(f); w.writerow(['round', 'round_kind', 'player', 'player_slot', 'class', 'flag', 'spawns', 'first_spawn_s', 'first_spawn_mm:ss', 'last_spawn_s', 'review'])
             for r in fb: w.writerow(r[:7] + [r[7], '%d:%02d' % divmod(int(r[7]), 60), r[8], r[9]])
-        print('%d flagbearer rows -> %s' % (len(fb), fb_path))
+        log('%d flagbearer rows -> %s' % (len(fb), fb_path))
     else:
-        print('flagbearers: skipped (no troop/item table for this server type)')
+        log('flagbearers: skipped (no troop/item table for this server type)')
+        if os.path.exists(fb_path): os.remove(fb_path)      # a leftover from an earlier run must not be shown as this run's result
     # admin actions announced by the server ("X Slayed Player Y.", "X Slayed Everyone.", "X Swapped Everyone to Spectators"): the deaths they cause are labelled
     # and left out of kills, deaths and teamkills (the scoreboard check below still sees the -1 an admin slay gives)
     from .events import admin_lines
@@ -197,6 +209,7 @@ def main(argv=None):
         if dt == 'kill' and not e['teamkill']: bump(e['killer'], 'kills', rn)      # teamkills are counted separately, not as kills
         bump(e['victim'], 'deaths', rn)
         if e['teamkill']: bump(e['killer'], 'teamkills', rn)
+    progress('players', 0.0)
     sp = os.path.splitext(out)[0] + '_players.csv'
     # --- scoreboard check: the server sends every player's current score (kills - teamkills) when you connect and on every change.
     sb = collections.defaultdict(list)                       # slot -> [(t, score)]
@@ -270,7 +283,11 @@ def main(argv=None):
             for (rn, k), _h in cols:
                 row.append((gap[(n, rn)] if (n, rn) in gapn else '') if k == 'score_gap' else c[(rn, k)])
             w.writerow(row)
-    print('%d kills -> %s\nper player -> %s\ndone in %.0f s' % (len(ev), out, sp, time.time() - t))
+    log('%d kills -> %s\nper player -> %s\ndone in %.0f s' % (len(ev), out, sp, time.time() - t))
+    progress('done', 1.0)
+    base = os.path.splitext(out)[0].replace('_kills', '')
+    return dict(kills=out, players=sp, rounds=base + '_rounds.csv', flagbearers=fb_path if os.path.exists(fb_path) else None)
+
 
 if __name__ == '__main__':
     mp.freeze_support(); main()

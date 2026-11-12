@@ -13,15 +13,30 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: pip install pyinstaller
+      - run: pip install pyinstaller pyside6 pytest
+      - name: Unit tests
+        run: python tests/test_guilogic.py
+      - name: Window self-test (builds the tables offscreen and checks sorting, filters and copy)
+        run: python nwkills_gui.py --selftest
       - run: pyinstaller --onefile --name nwkills --add-data "nwkills/data;nwkills/data" nwkills.py
-      - name: Smoke test
+      - name: Smoke test (command line)
         run: dist\nwkills.exe --help
+      - run: pyinstaller --onefile --windowed --name nwkills-gui --add-data "nwkills/data;nwkills/data" nwkills_gui.py
+      - name: Smoke test (window)
+        run: dist\nwkills-gui.exe --selftest
+        env:
+          QT_QPA_PLATFORM: offscreen
       - uses: actions/upload-artifact@v4
-        with: { name: nwkills-windows, path: dist/nwkills.exe }
+        with:
+          name: nwkills-windows
+          path: |
+            dist/nwkills.exe
+            dist/nwkills-gui.exe
       - name: Attach to release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/nwkills.exe
+          files: |
+            dist/nwkills.exe
+            dist/nwkills-gui.exe
           generate_release_notes: true
