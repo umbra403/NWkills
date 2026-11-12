@@ -98,7 +98,9 @@ def run(a, log=print, progress=lambda stage, frac: None):
             import pickle
             pickle.dump((recs, ros, flow_items), open(a.cache, 'wb'))
     progress('events', 0.0)
-    from .roster import retire_moved
+    from .roster import retire_moved, merge_joins
+    _nj = merge_joins(ros, recs)
+    if _nj: log('%d more player names read from join messages' % _nj)
     _since = retire_moved(ros)
     def namer(s, tt):
         if s is None: return '?'
