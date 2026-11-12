@@ -1,4 +1,4 @@
-import csv,json,os,collections
+import bisect, csv,json,os,collections
 # weapon class (5-bit field of the kill message) -> killfeed icon, read from the exe's jump table at 0x4bce0c (function 0x4bb310).
 # Names marked (icon) are the engine's icon names; the module draws its own art for them (e.g. ico_crossbow shows the musket).
 WCODE={0:'headshot',1:'melee: couched lance (cavalry)',2:'fists (punch)',3:'cavalry: horse charge (rider hit)',4:'bow (ico_bow)',
@@ -59,6 +59,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
     owner=[]  # (t,agent,slot)
     spawn_msg=[]
     t18=[]; miss=[]; obs_raw=[]
+    team_hist=collections.defaultdict(list)      # agent -> [(t, team)] from the spawn messages (type 5, 3-bit field): the client's own teamkill test compares these
     obs=collections.defaultdict(list); dm=collections.defaultdict(list); rid=collections.defaultdict(list)
     # map-change / reset blocks: the server kills every agent at once (killer == victim), hundreds of messages in a few seconds, often in queued
     # packets. They are not kills: self-deaths are dropped when 8 or more different agents have one within 3 seconds.
@@ -83,6 +84,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
                 if last and last[0]==key and t-last[1]<4: last=(key,t); continue
                 last=(key,t); kills.append(dict(t=t,victim=vic,killer=kil,wcode=wc,hit=hit,mode=f[3] if len(f)>3 else None,nextra=len(f)-5))
             elif ty==5 and len(f)>20 and f[0]>0:
+                team_hist[f[0]-1].append((t,f[3]))
                 if f[1]-1<=MAXSLOT: owner.append((t,f[0]-1,f[1]-1)); spawn_msg.append((f[0]-1,t))
             elif ty==18 and f and f[0]>0: t18.append((t,f[0]-1))
             elif ty==6 and len(f)>=6: miss.append((t,f[4]-1,f[5]-1))
@@ -134,6 +136,13 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
         c=[o for o in by_agent.get(a,[]) if t-0.3<=o[0]<=t+win and o[0]<nd and not any(abs(o[0]-x)<0.5 for x in spawn_t.get(a,[]))]
         sl=set(o[2] for o in c)
         return sl.pop() if len(sl)==1 else None
+    for a_ in team_hist: team_hist[a_].sort()
+    def team_of(a,t):
+        """Team of agent a from its latest spawn message at or before t (None if its spawn was not in the capture)."""
+        h=team_hist.get(a)
+        if not h: return None
+        i=bisect.bisect_right(h,(t+0.05,99))-1
+        return h[i][1] if i>=0 else None
     lastv={}; out=[]
     by_slot=collections.defaultdict(list)       # spawn messages only: owner records from agent property lists also describe agents that were already there
     sp_set=set((round(t_,2),a_) for a_,t_ in spawn_msg)
@@ -170,7 +179,14 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
         elif k['wcode']==0:
             pi=[it for tt,sh,it in miss if sh==k['killer'] and -1.0<t-tt<1.0]
             if pi and items and 0<=pi[0]<len(items): wn+=' ('+items[pi[0]][4:]+')'
-        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if dl is not None and dl<0 else '',killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra'),late=late,horse=horse))
+        # The client decides a teamkill from the two agents' teams (a friendly relation between them), not from the score. Used when both players' agents
+        # have a spawn message in the capture; otherwise the killer's score change decides (older behaviour).
+        tm=None
+        if k.get('mode')==2 and ks is not None and ks>=0 and vs is not None and vs>=0 and k['killer']!=k['victim']:
+            kt,vt=team_of(k['killer'],t),team_of(k['victim'],t)
+            if kt is not None and vt is not None: tm=(kt==vt)
+        tk_now = tm if tm is not None else (dl is not None and dl<0)
+        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if tk_now else '',tk_team=tm,killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra'),late=late,horse=horse))
     # Several kills by one player within a few seconds (artillery, canister) share one scoreboard change, so the per-kill test above gives them all the
     # same verdict. Use the whole change instead: n kills with a net change D contain (n - D) / 2 teamkills. Which of them are teamkills is a guess
     # (victims with the killer's regiment prefix first) and flagged 'burst'.
@@ -186,6 +202,8 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             while j+1<len(L) and L[j+1]['time']-L[j]['time']<=2.5: j+=1
             g=L[i:j+1]; i=j+1
             if len(g)<2: continue
+            for e in g: e['in_group']=True
+            if all(e['tk_team'] is not None for e in g): continue      # every verdict in the volley comes from the teams: nothing to guess
             t0,t1=g[0]['time'],g[-1]['time']
             ob=obs.get(ks,[])
             b=[x for tt,x in ob if tt<t0-0.3]
@@ -205,11 +223,14 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             D=cur-base
             if (n-D)%2 or not 0<=(n-D)//2<=n: continue
             tk=(n-D)//2
-            order=sorted(range(n),key=lambda x:(0 if _pre(g[x]['victim'])==_pre(g[x]['killer']) else 1, x))
-            flag=set(order[:tk])
-            for x,e in enumerate(g):
-                e['teamkill']='yes' if x in flag else ''
-                e['burst']=0<tk<n
+            unk=[x for x in range(n) if g[x]['tk_team'] is None]       # kills whose teams are known keep their verdict; the guess only covers the others
+            rem=tk-sum(1 for e in g if e['tk_team'])
+            if not unk or not 0<=rem<=len(unk): continue
+            order=sorted(unk,key=lambda x:(0 if _pre(g[x]['victim'])==_pre(g[x]['killer']) else 1, x))
+            flag=set(order[:rem])
+            for x in unk:
+                g[x]['teamkill']='yes' if x in flag else ''
+                g[x]['burst']=0<rem<len(unk)
     # Cavalry charge kills whose horse has no known owner (spawned unowned): the scoreboard credits the rider. Every score change of +-1 that one of the
     # player's own kills explains (same sign, within [kill - 0.3, kill + 2.5]) is set aside; the changes left over belong to kills we could not attribute.
     # A charge kill takes the player of a leftover change in its window when that is the only one; assignments are repeated, so a change claimed by a
@@ -239,5 +260,8 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
         if not pick: break
         e,(pl,to,d)=pick
         left[pl].remove((to,d)); todo.remove(e)
-        e['killer_slot']=pl; e['killer']=namer(pl,e['time']); e['teamkill']='yes' if d<0 else ''; e['late']=list(e['late'])+['killer-from-score']; e['burst']=False
+        e['killer_slot']=pl; e['killer']=namer(pl,e['time']); e['teamkill']='yes' if d<0 else ''; e['tk_team']=None; e['late']=list(e['late'])+['killer-from-score']; e['burst']=False
+    # cross-check: a team verdict that the killer's own score change contradicts (single kills only; a volley shares one change)
+    for e in out:
+        e['tk_check']= e['tk_team'] is not None and not e.get('in_group') and e['dl'] is not None and (e['dl']<0)!=e['tk_team']
     return out,local_slot

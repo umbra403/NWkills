@@ -190,6 +190,7 @@ def run(a, log=print, progress=lambda stage, frac: None):
             elif not isinstance(e['killer'], str) or e['killer'].startswith(('?', 'player#')): flags.append('killer?')
             if e['victim'] == '?' and e['time'] < 90: flags.append('before-sync')
             elif not isinstance(e['victim'], str) or e['victim'].startswith(('?', 'player#')): flags.append('victim?')
+            if e.get('tk_check'): flags.append('teamkill?(score disagrees)')      # the teams say one thing, the killer's score change the other
             if e.get('burst'): flags.append('teamkill?(burst)')      # several kills at once: the number of teamkills is exact, which of them is a guess
             if e.get('late'): flags.append('name-from-later-data(%s)' % '+'.join(e['late']))
             if e['weapon'].startswith('class ') or '(ico_' in e['weapon']: flags.append('weapon?')      # not yet seen on video (label from the exe's icon table only)
