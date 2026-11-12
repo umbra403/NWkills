@@ -125,3 +125,63 @@ def packet_at_time(times, t):
     """Index of the packet at (or just before) time t, for 'show this kill in the packet list'."""
     i = bisect.bisect_left(times, t - 0.05)
     return min(i, len(times) - 1)
+
+# ---------------------------------------------------------------- players table derived from kill rows
+def _int(v):
+    try: return int(v)
+    except (TypeError, ValueError): return None
+
+def round_label(n, kind): return 'R%s' % n + ('(%s)' % kind if kind else '')
+
+def player_totals(kh, krows, ph, prows, net=True, exclude_warm=True, all_players=False):
+    """Players table computed from the kill rows given (the rows the Kills tab currently shows).
+    Counting rules are the ones the converter uses for its own players file: admin slays, mount deaths and no-blow deaths are not counted;
+    AI deaths only credit the killer's ai_kills; a teamkill is not a kill. net=True: kills = kills - teamkills (as the scoreboard), also per round.
+    exclude_warm: leave warm-up rounds out (what the converter does for its totals). all_players: also list players from the converter's file that have no row.
+    Columns that need the scoreboard (score at capture start/end, score_gap) come from the converter's players file for the rounds that are included.
+    -> (headers, rows)"""
+    ix = {h: i for i, h in enumerate(kh)}
+    R, RK, KI, VI, TKI, DT = (ix[h] for h in ('round', 'round_kind', 'killer', 'victim', 'teamkill', 'death_type'))
+    c = collections.defaultdict(collections.Counter)
+    kinds = {}
+    for row in krows:
+        if exclude_warm and row[RK] == 'warm-up': continue
+        rn, dt = row[R], row[DT]
+        kinds[rn] = row[RK]
+        def bump(name, key): c[name][key] += 1; c[name][(rn, key)] += 1
+        if dt.startswith(('admin', 'horse death', 'no-blow death')): continue
+        if dt == 'AI/horse death':
+            if row[KI] not in ('?', '(AI)', '(world)'): bump(row[KI], 'ai_kills')
+            continue
+        tk = row[TKI] != ''
+        if dt == 'kill' and not tk: bump(row[KI], 'kills')
+        bump(row[VI], 'deaths')
+        if tk: bump(row[KI], 'teamkills')
+    rounds = sorted(kinds, key=lambda s: (_int(s) is None, _int(s) or 0, s))
+    pidx = {h: i for i, h in enumerate(ph)}
+    old = {r[0]: r for r in prows}
+    names = set(c)
+    if all_players: names |= set(old)
+    def val(n, key, rn=None):
+        v = c[n][key] if rn is None else c[n][(rn, key)]
+        return v - (c[n]['teamkills'] if rn is None else c[n][(rn, 'teamkills')]) if (key == 'kills' and net) else v
+    heads = ['player', 'kills', 'deaths', 'teamkills', 'ai_kills', 'score_at_capture_start', 'score_at_capture_end', 'score_gap']
+    cols = []
+    for rn in rounds:
+        lab = round_label(rn, kinds[rn])
+        for k in ('kills', 'deaths', 'teamkills', 'score_gap'): cols.append((rn, k)); heads.append('%s_%s' % (lab, k))
+    rows = []
+    for n in names:
+        o = old.get(n)
+        gaps = []
+        per = []
+        for rn, k in cols:
+            if k == 'score_gap':
+                g = o[pidx['%s_score_gap' % round_label(rn, kinds[rn])]] if o and '%s_score_gap' % round_label(rn, kinds[rn]) in pidx else ''
+                per.append(g)
+                if _int(g) is not None: gaps.append(int(g))
+            else: per.append(str(val(n, k, rn)))
+        rows.append([n, str(val(n, 'kills')), str(c[n]['deaths']), str(c[n]['teamkills']), str(c[n]['ai_kills']),
+                     o[pidx['score_at_capture_start']] if o else '', o[pidx['score_at_capture_end']] if o else '', str(sum(gaps)) if gaps else ''] + per)
+    rows.sort(key=lambda r: (-int(r[1]), r[0].lower()))
+    return heads, rows

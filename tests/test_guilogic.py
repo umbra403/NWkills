@@ -44,6 +44,22 @@ def test_packets():
     c = gl.command_line(dict(pcap='a.pcapng', out='o.csv', port=7243, me='x', jobs=4, cache=None, limit=None))
     assert '--port 7243' in c and '--me "x"' in c and '--cache' not in c
 
+def test_player_totals():
+    kh = ['round', 'round_kind', 'killer', 'victim', 'teamkill', 'death_type']
+    ph = ['player', 'score_at_capture_start', 'score_at_capture_end', 'score_gap', 'R2(live)_score_gap', 'R1(warm-up)_score_gap']
+    pr = [['A', '0', '3', '1', '1', '0'], ['Z', '', '', '', '', '']]
+    kr = [['2', 'live', 'A', 'B', '', 'kill'], ['2', 'live', 'A', 'C', '', 'kill'], ['2', 'live', 'B', 'A', 'yes', 'kill'],
+          ['2', 'live', 'A', '(AI)', '', 'AI/horse death'], ['2', 'live', 'A', 'A', '', 'admin slay'], ['1', 'warm-up', 'B', 'A', '', 'kill']]
+    h, r = gl.player_totals(kh, kr, ph, pr, net=True)
+    d = {x[0]: dict(zip(h, x)) for x in r}
+    assert 'Z' not in d and d['A']['kills'] == '2' and d['A']['deaths'] == '1' and d['A']['ai_kills'] == '1'      # warm-up and admin rows left out
+    assert d['B']['kills'] == '-1' and d['B']['teamkills'] == '1'
+    assert d['A']['R2(live)_kills'] == '2' and d['A']['score_gap'] == '1' and 'R1(warm-up)_kills' not in d['A']
+    h, r = gl.player_totals(kh, kr, ph, pr, net=False); d = {x[0]: dict(zip(h, x)) for x in r}
+    assert d['B']['kills'] == '0'                                                                              # teamkills no longer subtract
+    h, r = gl.player_totals(kh, kr, ph, pr, exclude_warm=False, all_players=True); d = {x[0]: dict(zip(h, x)) for x in r}
+    assert 'Z' in d and d['A']['deaths'] == '2' and 'R1(warm-up)_deaths' in d['A']
+
 if __name__ == '__main__':
     for n, f in list(globals().items()):
         if n.startswith('test_'): f(); print('ok', n)

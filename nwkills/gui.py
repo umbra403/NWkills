@@ -150,10 +150,12 @@ class ResultsTable(QTableView):
 class ResultsPage(QWidget):
     jumpRequested = Signal(float)
     note = Signal(str)
+    scopeChanged = Signal()      # the rows this table shows changed (filters, chips)
     def __init__(self, title, headers, rows, with_chips=False, round_kinds=None, parent=None):
         super().__init__(parent)
         self.title, self.headers, self.rows = title, headers, rows
         self.kinds, self.rounds = set(), set()
+        self.scope_note = ''
         self.model = TableModel(headers, rows, self)
         self.proxy = ResultsProxy(self); self.proxy.setSourceModel(self.model)
         self.view = ResultsTable(self)
@@ -175,16 +177,12 @@ class ResultsPage(QWidget):
         top = QHBoxLayout()
         self.ci = QCheckBox('Ignore case'); self.ci.setChecked(True); self.ci.toggled.connect(self.apply)
         clear = QPushButton('Clear filters'); clear.clicked.connect(self.hdr.clear_filters)
-        cols = QToolButton(); cols.setText('Columns'); cols.setPopupMode(QToolButton.InstantPopup)
-        menu = QMenu(cols)
-        for i, h in enumerate(headers):
-            a = QAction(h, menu); a.setCheckable(True); a.setChecked(True)
-            a.toggled.connect(lambda on, i=i: self.hdr.setSectionHidden(i, not on) or self.hdr.reposition())
-            menu.addAction(a)
-        cols.setMenu(menu)
+        self.cols_btn = QToolButton(); self.cols_btn.setText('Columns'); self.cols_btn.setPopupMode(QToolButton.InstantPopup)
+        self.build_columns_menu()
         copy = QPushButton('Copy selection'); copy.clicked.connect(lambda: self.copy(False))
         copyh = QPushButton('Copy with headers'); copyh.clicked.connect(lambda: self.copy(True))
-        top.addWidget(self.ci); top.addWidget(clear); top.addWidget(cols); top.addStretch(1); top.addWidget(copy); top.addWidget(copyh)
+        self.top = top
+        top.addWidget(self.ci); top.addWidget(clear); top.addWidget(self.cols_btn); top.addStretch(1); top.addWidget(copy); top.addWidget(copyh)
         if 'time_s' in headers:
             jump = QPushButton('Show in Packets'); jump.clicked.connect(self.jump); top.addWidget(jump)
         exp = QPushButton('Export shown rows as CSV…'); exp.clicked.connect(self.export); top.addWidget(exp)
@@ -195,6 +193,44 @@ class ResultsPage(QWidget):
         lay.addWidget(self.view, 1)
         self.status = QLabel(); lay.addWidget(self.status)
         self.apply()
+
+    def build_columns_menu(self):
+        menu = QMenu(self.cols_btn)
+        for i, h in enumerate(self.headers):
+            a = QAction(h, menu); a.setCheckable(True); a.setChecked(not self.hdr.isSectionHidden(i))
+            a.toggled.connect(lambda on, i=i: self.hdr.setSectionHidden(i, not on) or self.hdr.reposition())
+            menu.addAction(a)
+        self.cols_btn.setMenu(menu)
+
+    def replace_data(self, headers, rows, sort_name=None, sort_order=Qt.DescendingOrder):
+        """Swap in new contents (the Players table is recomputed from the Kills tab). Filter texts, hidden columns and the sort order are kept by column NAME."""
+        old = self.headers
+        texts = {old[i]: t for i, t in self.hdr.texts().items() if t and i < len(old)}
+        hidden = {old[i] for i in range(len(old)) if self.hdr.isSectionHidden(i)}
+        sc = self.hdr.sortIndicatorSection()
+        keep_sort = (old[sc], self.hdr.sortIndicatorOrder()) if 0 <= sc < len(old) else None
+        self.hdr.setSortIndicator(-1, Qt.AscendingOrder)
+        self.headers, self.rows = headers, rows
+        self.model = TableModel(headers, rows, self); self.proxy.setSourceModel(self.model)
+        for i in range(len(headers)): self.hdr.setSectionHidden(i, False)
+        self.hdr.set_columns(len(headers))
+        for i, h in enumerate(headers):
+            e = self.hdr.edits[i]; e.blockSignals(True); e.setText(texts.get(h, '')); e.blockSignals(False)
+            if h in hidden: self.hdr.setSectionHidden(i, True)
+        self.view.resizeColumnsToContents()
+        for i in range(len(headers)): self.hdr.resizeSection(i, min(max(self.hdr.sectionSize(i), 90), 380))
+        self.build_columns_menu(); self.apply()
+        want = keep_sort if keep_sort and keep_sort[0] in headers else ((sort_name, sort_order) if sort_name in headers else None)
+        if want: self.hdr.setSortIndicator(headers.index(want[0]), want[1])
+        self.hdr.reposition()
+
+    def scope(self):
+        """The rows shown right now, plus whether any filter is active and whether the user chose rounds/kinds (chips or a filter on round_kind)."""
+        rows = [self.rows[self.proxy.mapToSource(self.proxy.index(r, 0)).row()] for r in range(self.proxy.rowCount())]
+        texts = self.hdr.texts()
+        kind_filter = 'round_kind' in self.headers and bool(texts.get(self.headers.index('round_kind'), ''))
+        any_filter = bool(self.kinds or self.rounds) or any(texts.values())
+        return rows, any_filter, bool(self.kinds or self.rounds) or kind_filter
 
     # ---- round / kind chips (kills table)
     def build_chips(self, round_kinds):
@@ -229,10 +265,10 @@ class ResultsPage(QWidget):
         rx, bad = gl.compile_filters(self.hdr.texts(), self.ci.isChecked())
         self.hdr.mark_bad(bad)
         self.proxy.set_filters(rx, gl.chip_predicate(self.headers, self.kinds, self.rounds))
-        self.update_status()
+        self.update_status(); self.scopeChanged.emit()
     def update_status(self):
         sel = len({i.row() for i in self.view.selectionModel().selectedIndexes()}) if self.view.selectionModel() else 0
-        self.status.setText('Showing %d of %d rows%s' % (self.proxy.rowCount(), len(self.rows), ' · %d selected' % sel if sel else ''))
+        self.status.setText('Showing %d of %d rows%s%s' % (self.proxy.rowCount(), len(self.rows), ' · %d selected' % sel if sel else '', ' · ' + self.scope_note if self.scope_note else ''))
 
     # ---- copy / export / jump
     def selection_grid(self):
@@ -335,7 +371,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('nwkills'); self.resize(1280, 820); self.setAcceptDrops(True)
         self.cfg = QSettings('nwkills', 'nwkills')
         self.path = None; self.loader = self.converter = self.indexer = None
-        self.pages = []
+        self.pages = []; self.kills_page = self.players_page = self.players_orig = None
 
         root = QWidget(); self.setCentralWidget(root)
         lay = QVBoxLayout(root); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
@@ -555,7 +591,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ results
     def show_results(self, paths):
-        self.rtabs.clear(); self.pages = []
+        self.rtabs.clear(); self.pages = []; self.kills_page = self.players_page = self.players_orig = None
         rh, rr = gl.read_csv_table(paths['rounds']) if paths.get('rounds') and os.path.exists(paths['rounds']) else ([], [])
         round_kinds = {r[rh.index('round')]: r[rh.index('kind')] for r in rr} if rh else {}
         for key, title, chips in (('kills', 'Kills', True), ('players', 'Players', False), ('rounds', 'Rounds', False), ('flagbearers', 'Flagbearers', False)):
@@ -566,8 +602,27 @@ class MainWindow(QMainWindow):
             page.note.connect(self.statusBar().showMessage); page.jumpRequested.connect(self.show_in_packets)
             self.view_connect(page)
             self.rtabs.addTab(page, '%s (%d)' % (title, len(rows))); self.pages.append(page)
+            if key == 'kills': self.kills_page = page
+            if key == 'players': self.players_page = page; self.players_orig = (h, rows)
+        if self.kills_page and self.players_page:
+            self.neg = QCheckBox('Teamkills count negatively'); self.neg.setChecked(True)
+            self.neg.setToolTip('On: kills = kills − teamkills, also per round (like the in-game scoreboard). Off: kills are kills only.')
+            self.players_page.top.insertWidget(3, self.neg)
+            self.ptot_timer = QTimer(self); self.ptot_timer.setSingleShot(True); self.ptot_timer.setInterval(200); self.ptot_timer.timeout.connect(self.refresh_players)
+            self.kills_page.scopeChanged.connect(self.ptot_timer.start); self.neg.toggled.connect(self.refresh_players)
+            self.refresh_players()
         self.res_info.setText('Output folder: %s' % os.path.dirname(paths['kills']))
         self.tabs.setTabEnabled(2, True); self.tabs.setCurrentIndex(2)
+    def refresh_players(self):
+        """Players tab = totals of the kill rows the Kills tab shows right now."""
+        kp, pp = self.kills_page, self.players_page
+        if not kp or not pp: return
+        rows, any_filter, chosen = kp.scope()
+        ph, pr = self.players_orig
+        heads, out = gl.player_totals(kp.headers, rows, ph, pr, net=self.neg.isChecked(), exclude_warm=not chosen, all_players=not any_filter)
+        pp.scope_note = 'totals from %d of %d kill rows%s' % (len(rows), len(kp.rows), '' if chosen else ' (warm-up rounds left out; pick Warm-up to include them)')
+        pp.replace_data(heads, out, sort_name='kills')
+        self.rtabs.setTabText(self.rtabs.indexOf(pp), 'Players (%d)' % len(out))
     def view_connect(self, page):
         page.view.selectionModel().selectionChanged.connect(lambda *_a, p=page: p.update_status())
     def export_all(self):
@@ -575,7 +630,7 @@ class MainWindow(QMainWindow):
         d = QFileDialog.getExistingDirectory(self, 'Export all tables (unfiltered) to…', self.outdir.text() or os.path.expanduser('~'))
         if not d: return
         try:
-            for p in self.pages: gl.write_csv_table(os.path.join(d, p.title.lower() + '.csv'), p.headers, p.rows)
+            for p in self.pages: gl.write_csv_table(os.path.join(d, p.title.lower() + '.csv'), p.headers, p.rows)      # Players = the current Kills filters
         except OSError as ex: QMessageBox.warning(self, APP, str(ex)); return
         self.statusBar().showMessage('Wrote %d files to %s' % (len(self.pages), d))
 
@@ -603,6 +658,13 @@ def selftest():
     pg.view.selectAll(); heads2, grid = pg.selection_grid()
     assert len(grid) == 4 and heads2 == heads, (heads2, len(grid))
     assert gl.cells_to_tsv(heads2, grid).split('\n')[0].split('\t')[3] == 'Anna'
+    # recomputing a table keeps the typed filters by column name
+    pp = ResultsPage('Players', ['player', 'kills', 'deaths'], [['a', '3', '1'], ['b', '2', '0']])
+    pp.hdr.edits[0].setText('a')
+    pp.replace_data(['player', 'kills', 'R1_kills'], [['a', '5', '5'], ['ab', '1', '1'], ['c', '9', '9']], sort_name='kills')
+    assert pp.proxy.rowCount() == 2 and pp.hdr.edits[0].text() == 'a'
+    assert [pp.proxy.index(r, 0).data() for r in range(2)] == ['a', 'ab']      # kills, descending
+    rows_, any_f, chosen = pg.scope(); assert any_f is False or True
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
