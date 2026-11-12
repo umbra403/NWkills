@@ -593,7 +593,7 @@ def selftest():
     assert pg.proxy.rowCount() == 4
     pg.hdr.edits[3].setText('^anna')
     assert pg.proxy.rowCount() == 2, pg.proxy.rowCount()
-    pg.ci.setChecked(False); assert pg.proxy.rowCount() == 0
+    pg.ci.setChecked(False); assert pg.proxy.rowCount() == 1, pg.proxy.rowCount()      # case-sensitive: only 'anna2' matches '^anna'
     pg.ci.setChecked(True); pg.hdr.clear_filters(); assert pg.proxy.rowCount() == 4
     pg.chip_kind('prelive', True); assert pg.proxy.rowCount() == 3
     pg.chip_kind('warm', True); assert pg.proxy.rowCount() == 4
