@@ -17,7 +17,8 @@ def death_type(e, burst=False):
         return 'world (team swap / left server)'
     if ks is not None and ks == vs:
         if e['weapon'].startswith('headshot'): return 'self-inflicted: fall'                       # confirmed by chat markers in a test capture
-        if e['weapon'].startswith('fists'): return 'self-inflicted: suicide (or admin slay)'    # slay and suicide share the packets and the killfeed icon
+        if e['weapon'].startswith('fists'): return 'self-inflicted: suicide (no admin line)'    # slay and suicide share the packets and the killfeed icon
+        if e['weapon']=='drowning': return 'self-inflicted: drowning'                        # confirmed on video (own drowning, capture 2026-11-11)
         return 'self-inflicted (other)'
     if e.get('horse'): return 'horse death (player-owned mount)'     # victim agent is the player's horse (no rider properties); not a player death, no score
     if e.get('mode') != 2:
@@ -101,11 +102,25 @@ def main(argv=None):
     items = json.load(open(os.path.join(here, 'data', 'items.json')))
     ev, ls = decode(recs, None, me, items, namer)
     need = set(e[r + '_slot'] for e in ev for r in ('killer', 'victim') if e[r + '_slot'] is not None and e[r + '_slot'] >= 0 and not lookup(ros, e[r + '_slot'], e['time']))
+    # a slot whose first known name only shows up after an event that used the slot, and that name held ANOTHER slot earlier (the player rejoined into this
+    # slot): the earlier occupant of this slot is unknown, not that name
+    _first = {}
+    for sl_, v_ in ros.items():
+        for x_ in v_:
+            if x_[2] and (x_[2] not in _first or x_[0] < _first[x_[2]][0]): _first[x_[2]] = (x_[0], sl_)
+    early = set()
+    for e in ev:
+        for r in ('killer', 'victim'):
+            s_ = e[r + '_slot']
+            if s_ is None or s_ < 0 or not ros.get(s_) or not ros[s_][0][2] or ros[s_][0][0] <= e['time'] + 5: continue
+            nm_ = ros[s_][0][2]
+            if any(x[2] == nm_ and x[0] < ros[s_][0][0] - 1 for sl_, v_ in ros.items() if sl_ != s_ for x in v_): early.add(s_)
+    need |= early
     if need and flow_items is None:
         _i, _pk = read_pcapng(a.pcap); _k, _f = find_server_flow(_pk, a.port); flow_items = [(ts - _f[0][0], pl) for ts, pl in _f]
     if need and flow_items:
         from .roster import fill_roster
-        fill_roster(ros, flow_items, need, since=_since)
+        fill_roster(ros, flow_items, need, since=_since, early=early)
         ev, ls = decode(recs, None, me, items, namer)
     for e in ev:
         if e['killer_agent'] is not None and e['killer_agent'] < 0: e['killer'] = '(world)'
@@ -119,7 +134,10 @@ def main(argv=None):
     out = a.out or os.path.splitext(a.pcap)[0] + '_kills.csv'
     with open(os.path.splitext(out)[0].replace('_kills', '') + '_rounds.csv', 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f); w.writerow(['round', 'start_s', 'end_s', 'length_s', 'started_by', 'tickets_zero_at_s', 'tickets_zero_team', 'kills_after_tickets_zero', 'kind', 'death_msgs', 'method', 'review'])
-        for r in rounds: w.writerow([r['n'], round(r['start']), round(r['end']), round(r['end'] - r['start']), r['signals'], r['tickets_zero'][0] if r['tickets_zero'] else '', r['tickets_zero'][1] if r['tickets_zero'] else '', r.get('kills_after_zero', ''), r.get('kind', ''), r['kills'], r['method'], r['review']])
+        # death_msgs = rows of the kills file in that round (one per death). The raw message count is not used: the server sends every death
+        # once per recipient and each recording catches a different number of those copies, so raw counts differ between recordings.
+        nrows = collections.Counter(round_of(rounds, e['time']) for e in ev)
+        for r in rounds: w.writerow([r['n'], round(r['start']), round(r['end']), round(r['end'] - r['start']), r['signals'], r['tickets_zero'][0] if r['tickets_zero'] else '', r['tickets_zero'][1] if r['tickets_zero'] else '', r.get('kills_after_zero', ''), r.get('kind', ''), nrows.get(r['n'], 0), r['method'], r['review']])
     # --- flagbearers (separate file): who spawned carrying a flag, per round
     from . import flags
     fb_path = os.path.splitext(out)[0].replace('_kills', '') + '_flagbearers.csv'
@@ -133,6 +151,24 @@ def main(argv=None):
         print('%d flagbearer rows -> %s' % (len(fb), fb_path))
     else:
         print('flagbearers: skipped (no troop/item table for this server type)')
+    # admin actions announced by the server ("X Slayed Player Y.", "X Slayed Everyone.", "X Swapped Everyone to Spectators"): the deaths they cause are labelled
+    # and left out of kills, deaths and teamkills (the scoreboard check below still sees the -1 an admin slay gives)
+    from .events import admin_lines
+    adm = admin_lines(recs)
+    for e in ev:
+        e['admin'] = None
+        selfd = e['killer_agent'] is not None and e['killer_agent'] == e['victim_agent']
+        world = e['killer_agent'] is not None and e['killer_agent'] < 0
+        for t_, kind, who_, tg in adm:
+            if not (t_ - 2.5 <= e['time'] <= t_ + 1.5): continue
+            if kind == 'slay' and selfd and e['victim'] == tg and not e['victim_slot'] is None and e['victim_slot'] >= 0: e['admin'] = 'admin slay'
+            elif kind == 'slay_all' and (selfd or world): e['admin'] = 'admin: slayed everyone'
+            elif kind == 'swap_all' and world: e['admin'] = 'admin: swapped everyone to spectators'
+            if e['admin']: break
+    # a no-blow death (mount / AI unit) whose owner was never seen is labelled as such instead of '?': the label reads the same in every recording
+    for e in ev:
+        if e['victim'] == '?' and death_type(e, e['time'] in burst_t).startswith('no-blow death'): e['victim'] = '(AI/mount, owner unknown)'
+        if e['killer'] == '?' and e['killer_slot'] is None and 'horse charge' in e['weapon']: e['killer'] = '(AI/mount, owner unknown)'      # a charging horse whose owner was never seen
     known = set(WCODE)
     with open(out, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f); w.writerow(['round', 'round_kind', 'time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'respawn_s', 'review', 'killer_slot', 'victim_slot'])
@@ -142,18 +178,19 @@ def main(argv=None):
             elif not isinstance(e['killer'], str) or e['killer'].startswith(('?', 'player#')): flags.append('killer?')
             if e['victim'] == '?' and e['time'] < 90: flags.append('before-sync')
             elif not isinstance(e['victim'], str) or e['victim'].startswith(('?', 'player#')): flags.append('victim?')
+            if e.get('burst'): flags.append('teamkill?(burst)')      # several kills at once: the number of teamkills is exact, which of them is a guess
             if e.get('late'): flags.append('name-from-later-data(%s)' % '+'.join(e['late']))
             if e['weapon'].startswith('class ') or '(ico_' in e['weapon']: flags.append('weapon?')      # not yet seen on video (label from the exe's icon table only)
             
-            if e['killer'] == e['victim'] and e['killer'] not in ('?', '(AI)', '(world)'): flags.append('self')
-            w.writerow([round_of(rounds, e['time']), rkind(rounds, e['time']), e['time'], '%d:%02d' % divmod(int(e['time']), 60), e['killer'], e['victim'], e['weapon'], e['teamkill'], death_type(e, e['time'] in burst_t), '' if e.get('respawn') is None else e['respawn'], ' '.join(flags), e['killer_slot'], e['victim_slot']])
+            if e['killer'] == e['victim'] and e['killer'] not in ('?', '(AI)', '(world)') and not e['admin']: flags.append('self')
+            w.writerow([round_of(rounds, e['time']), rkind(rounds, e['time']), e['time'], '%d:%02d' % divmod(int(e['time']), 60), e['killer'], e['victim'], e['weapon'], e['teamkill'], e['admin'] or death_type(e, e['time'] in burst_t), '' if e.get('respawn') is None else e['respawn'], ' '.join(flags), e['killer_slot'], e['victim_slot']])
     st = collections.defaultdict(lambda: collections.Counter())
     def bump(name, key, rn):
         st[name][key] += 1; st[name][(rn, key)] += 1
     for e in ev:
         dt = death_type(e, e['time'] in burst_t)
         rn = round_of(rounds, e['time'])
-        if dt.startswith(('horse death', 'no-blow death')): continue
+        if e['admin'] or dt.startswith(('horse death', 'no-blow death')): continue
         if dt == 'AI/horse death':
             if e['killer'] not in ('?', '(AI)', '(world)'): bump(e['killer'], 'ai_kills', rn)
             continue
@@ -165,7 +202,7 @@ def main(argv=None):
     sb = collections.defaultdict(list)                       # slot -> [(t, score)]
     for r in recs:
         tl = r.get('tail')
-        if not tl: continue
+        if not tl or r['L'] - tl['end'] >= 8 or r.get('err'): continue      # only packets whose tail parsed to the end: the large map-change blocks give garbage scores
         for p_, pr, v in tl['players']:
             if pr == 0 and 0 <= p_ < 250:
                 sc = v - 8192 if v >= 4096 else v
@@ -174,6 +211,9 @@ def main(argv=None):
     sc0 = {}; sc1 = {}
     BASE = 6.0       # the scoreboard reset lands a few seconds after the detected round start
     byslot = collections.defaultdict(list)
+    for e in ev:
+        if e['killer_agent'] is not None and e['killer_agent'] < 0 and e['victim_slot'] is not None and e['victim_slot'] >= 0 and e['respawn'] and not e.get('admin'):
+            byslot[e['victim_slot']].append((e['time'], -1))      # a team swap (killer-less death, the player respawns) costs 1 point; leaving the server does not
     for e in ev:
         if e['killer_slot'] is None or e['killer_slot'] < 0: continue
         dt = death_type(e, False)
@@ -188,11 +228,26 @@ def main(argv=None):
                 if not before: continue
                 s0_ = before[-1]
             else: s0_ = ser[0][1]
+            # the scoreboard reset (score falls to 0 for everyone) can land well after the detected start: if the score drops by 2 or more in
+            # the first 2 minutes of the round, count from the value after that drop (kills only ever add 1, a teamkill takes 1 off)
+            ser_r = [(t_, v_) for t_, v_ in ser if r['start'] < t_ < r['end']] if r['start'] > 0 else []
+            prev_ = s0_
+            for t_, v_ in ser_r:
+                if t_ > r['start'] + 120: break
+                if abs(v_ - prev_) >= 2 and -1 <= v_ <= 1 and t_ > tb:      # a reset goes to 0 (or -1 / 1 if the first event follows at once), from above or, after teamkills, from below; seen up to 64 s after a map change
+                    tb = t_; s0_ = v_; inr = [x_ for tt_, x_ in ser if tb < tt_ < r['end']]; break
+                prev_ = v_
+            # a player whose score was not re-sent after the reset (no change yet) still shows last round's value: if the first value of the round
+            # fits counting from 0 but not from that stale value, the round started from 0
+            if r['start'] > 0 and s0_ != 0 and inr:
+                t1 = next(t_ for t_, v_ in ser if t_ > tb)
+                n1 = sum(d for t_, d in byslot[slot] if tb < t_ <= t1 + 0.05)
+                if inr[0] - s0_ != n1 and inr[0] == n1: s0_ = 0
             vals = [s0_] + inr
-            if any(b_ - a_ < -15 for a_, b_ in zip(vals, vals[1:])): continue      # score reset inside the round (slot reused / player rejoined)
+            if any(abs(b_ - a_) > 15 for a_, b_ in zip(vals, vals[1:])): continue      # score reset inside the round, or a jump no kills can explain (slot reused / player rejoined)
             nm = lookup(ros, slot, tb)
             if not nm: continue
-            net = sum(d for t_, d in byslot[slot] if tb < t_ < r['end'])
+            net = sum(d for t_, d in byslot[slot] if tb + (0.1 if r['start'] == 0 else 0) < t_ < r['end'])      # capture start: the first score we see already contains the kills of that same moment
             gap[(nm, r['n'])] += (vals[-1] - s0_) - net; gapn[(nm, r['n'])] += 1
         nm = lookup(ros, slot, ser[0][0])
         if nm: sc0[nm] = ser[0][1]; sc1[nm] = ser[-1][1]

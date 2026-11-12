@@ -25,8 +25,10 @@ import os as _os
 _ALLPROPS = bool(_os.environ.get('NWKEEP_ALL_AGENT_PROPS'))      # research switch: keep every agent property (health etc.)
 def one(a):
     k, ts, pl = a
+    queued = len(pl) > 7 and pl[7] == 0
+    if queued: pl = pl[:7] + pl[8:]         # count -1: the game stores the packet and replays it later without the count byte; its tail is never read
     n = pl[7]-1 if len(pl) > 7 else 0
-    rec = dict(i=k, t=ts, L=len(pl)*8, n=n, msgs=[], ev=[], txt=[], rst=0, tail=None, err=None)
+    rec = dict(i=k, t=ts, L=len(pl)*8, n=n, msgs=[], ev=[], txt=[], rst=0, tail=None, err=None, q=queued)
     pos = 68
     if n > 0:
         try: r, cur, ms = msgs_only(pl)
@@ -40,6 +42,9 @@ def one(a):
         rec['txt'] = [''.join(chr(v) for b, v in m[3] if b == 8 and 32 <= v < 127) for m in ms if m[2] == 39]
         rec['rst'] = sum(1 for m in ms if m[2] == 41 and len(m[3]) == 1 and m[3][0][0] in (1, 3))
         rec['ev'] = [(m[2], m[3][2][1], [v for b, v in m[3][3:]]) for m in ms if m[2] in (36, 37, 38) and len(m[3]) >= 4 and m[3][1][1] == 107]
+    if queued:
+        rec['err'] = rec['err'] or 'queued'
+        return rec
     t = parse_tail(pl, pos)
     if t is None: rec['err'] = (rec['err'] or '') + 'tail'
     else:

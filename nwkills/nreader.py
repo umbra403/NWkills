@@ -9,7 +9,7 @@ class Unknown(Exception):
 # fixed body layouts; strings are server-specific widths (resolved from the profile)
 F = {
     1: (1, 2, 3),
-    2: (3, 11, 13, 13, 13, 13),
+    2: (3, 5, 13, 13, 13, 13),         # second field = faction-count width (5 on NW and NWE, confirmed on 107 queued packets), like the two fields of types 0 and 63
     5: (10, 8, 'S324', 3, 8, 32) + ('IA',)*11 + (10, 10, 51, 10, 7, 7, 7, 1, 'T5X'),
     6: (10, 51, 27, 12, 10, 'X328', 32, 'X328', 32),
     9: (10, 10, 6, 10, 10, 10, 12, 12, 12, 12),
@@ -126,7 +126,10 @@ def read_messages(pl, prof):
                 string(out, 49); rd(14, out); rd(14, out); string(out, 49); rd(16, out); string(out, 49); rd(16, out); string(out, 49)
                 rd(8, out); rd(8, out)
                 a = rd(1, out); b = rd(1, out); c = rd(1, out)
-                if c: raise Unknown(t)                 # extra (32, 1) groups follow; their count is not understood
+                if c:                                  # list of 32-bit values, each followed by a 'more' bit
+                    while True:
+                        rd(32, out)
+                        if not rd(1, out): break
                 rd(10, out)
                 if t == 53:
                     for _ in range(8): rd(8, out)

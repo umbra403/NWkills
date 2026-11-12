@@ -5,9 +5,23 @@ WCODE={0:'headshot',1:'melee: couched lance (cavalry)',2:'fists (punch)',3:'cava
  5:'firearm: musket/rifle',6:'thrown axe (ico_axethrow)',7:'thrown knife (ico_knifethrow)',8:'javelin (ico_javelin)',9:'thrown stone (ico_stonethrow)',
  10:'firearm: pistol',11:'firearm: musket (ico_musket)',12:'melee: sword/sabre',13:'melee: two-handed sword (ico_swordtwo)',14:'melee: one-handed axe (ico_axeone)',
  15:'melee: two-handed axe (ico_axetwo)',16:'melee: mace/club',17:'melee: bayonet/spear',18:'melee: morningstar (ico_morningstar)',19:'melee: hammer/mallet',
- 20:'artillery: cannonball',21:'artillery: shrapnel/canister',22:'artillery: explosion',23:'special: custom icon 4 (ico_custom_4)',
+ 20:'artillery: cannonball',21:'artillery: shrapnel/canister',22:'artillery: explosion',23:'drowning',
  24:'special: custom icon 5 (ico_custom_5)',25:'special: custom icon 6 (ico_custom_6)',26:'special: custom icon 7 (ico_custom_7)'}
 MAXSLOT=250
+import re
+_ADM=[(re.compile(r'^(.+?) Slayed Player (.+)\.$'),'slay'),(re.compile(r'^(.+?) Slayed Everyone\.?$'),'slay_all'),(re.compile(r'^(.+?) Swapped Everyone to Spectators\.?$'),'swap_all')]
+def admin_lines(recs):
+    """Admin actions the server announces as text lines -> [(t, kind, admin, target)], kind slay / slay_all / swap_all (each line arrives in 2 copies)."""
+    out=[]
+    for r in recs:
+        for s in r['txt']:
+            for rx,kind in _ADM:
+                m=rx.match(s.strip())
+                if m:
+                    tg=m.group(2) if kind=='slay' else None
+                    if not any(o[1]==kind and o[3]==tg and abs(o[0]-r['t'])<1.0 for o in out): out.append((r['t'],kind,m.group(1),tg))
+                    break
+    return out
 def load_roster(path):
     r={}
     if path and os.path.exists(path):
@@ -43,12 +57,25 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
     if namer is None: namer=lambda s,t: roster.get(s,s)
     kills=[];last=None
     owner=[]  # (t,agent,slot)
+    spawn_msg=[]
     t18=[]; miss=[]; obs_raw=[]
     obs=collections.defaultdict(list); dm=collections.defaultdict(list); rid=collections.defaultdict(list)
+    # map-change / reset blocks: the server kills every agent at once (killer == victim), hundreds of messages in a few seconds, often in queued
+    # packets. They are not kills: self-deaths are dropped when 8 or more different agents have one within 3 seconds.
+    adm_all=[a[0] for a in admin_lines(recs) if a[1] in ('slay_all','swap_all')]      # blocks announced by the server as an admin action are kept (and labelled in the kills file)
+    selft=sorted((r['t'],v[1]) for r in recs for ty,v,w in r['msgs'] if ty==13 and len(v)>=6 and v[1]==v[2])
+    mass=set()
+    j=0
+    for i,(t0,_) in enumerate(selft):
+        while selft[j][0]<t0-1.5: j+=1
+        k=i
+        while k+1<len(selft) and selft[k+1][0]<=t0+1.5: k+=1
+        if len(set(x[1] for x in selft[j:k+1]))>=8 and not any(a-2.5<=t0<=a+1.5 for a in adm_all): mass.add(t0)      # distinct agents: one death is sent again and again (up to 20 copies) while the client is slow to acknowledge
     for r in recs:
         t=r['t']
         for ty,v,w in r['msgs']:
             f=v[1:]; ws=w[1:]
+            if ty==13 and len(f)>=5 and f[0]==f[1] and t in mass: continue
             if ty==13 and len(f)>=5:
                 vic=f[0]-1; kil=f[1]-1; wc=f[2]
                 hit=f[-1] if ws[-1]==9 else None
@@ -56,13 +83,14 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
                 if last and last[0]==key and t-last[1]<4: last=(key,t); continue
                 last=(key,t); kills.append(dict(t=t,victim=vic,killer=kil,wcode=wc,hit=hit,mode=f[3] if len(f)>3 else None,nextra=len(f)-5))
             elif ty==5 and len(f)>20 and f[0]>0:
-                if f[1]-1<=MAXSLOT: owner.append((t,f[0]-1,f[1]-1))
+                if f[1]-1<=MAXSLOT: owner.append((t,f[0]-1,f[1]-1)); spawn_msg.append((f[0]-1,t))
             elif ty==18 and f and f[0]>0: t18.append((t,f[0]-1))
             elif ty==6 and len(f)>=6: miss.append((t,f[4]-1,f[5]-1))
         tl=r['tail']
+        ok_tail=bool(tl) and r['L']-tl['end']<8 and not r['err']     # the property list of a packet whose tail did not parse to the end can hold garbage owner values
         if tl:
             for a,p,val in tl['agents']:
-                if p==27 and 0<val<=MAXSLOT+1: owner.append((t if t>=30 else 0,a,val-1))
+                if p==27 and 0<val<=MAXSLOT+1 and ok_tail: owner.append((t if t>=30 else t*1e-6,a,val-1))   # first 30 s: known from the start, but keep their order (a stale value is corrected a moment later)
                 if p==13 and val==1: dm[a].append(t)
                 if p in (6,7): rid[a].append(t)      # rider agents carry properties 6/7; horses do not
             for pl,p,val in tl['players']:
@@ -81,7 +109,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             s=[o for o in owner if o[1]==k['victim'] and o[0]<k['t']-0.3]
             if s and any(k['t']<x[0]<k['t']+10 and not [o for o in owner if o[1]==x[1] and abs(o[0]-x[0])<4] for x in t18) and s[-1][2]>=0: c[s[-1][2]]+=1
         local_slot=c.most_common(1)[0][0] if c else None
-    cur=[o[1] for o in owner if o[0]==0 and o[2]==local_slot]
+    cur=[o[1] for o in owner if o[0]<1e-4 and o[2]==local_slot]
     cur=cur[0] if cur else None
     for k in kills:
         if cur is not None and k['victim']==cur:
@@ -93,25 +121,32 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
         return c[-1][2] if c else None
     by_agent=collections.defaultdict(list)
     for o in owner: by_agent[o[1]].append(o)
+    spawn_t=collections.defaultdict(list)
+    for a_,t_ in spawn_msg: spawn_t[a_].append(t_)
+    death_t=collections.defaultdict(list)
+    for k in kills: death_t[k['victim']].append(k['t'])
     def who_late(a,t,win=120.0):
         """Owner of agent a learned from data that arrives AFTER the event (agents already present when the capture started
-        are only listed later). Used only when nothing earlier is known; accepted only if every sighting within win seconds
-        agrees on one player (an agent id is reused once the agent is gone, so a conflict means we cannot tell)."""
-        c=[o for o in by_agent.get(a,[]) if t-0.3<=o[0]<=t+win]
+        are only listed later). Used only when nothing earlier is known. Sightings are ignored if they come with a spawn message
+        of that agent id (the id was re-created, so it is another agent) or after the agent's next death; accepted only if all
+        remaining sightings within win seconds agree on one player."""
+        nd=min([x for x in death_t.get(a,[]) if x>t+0.3],default=1e18)
+        c=[o for o in by_agent.get(a,[]) if t-0.3<=o[0]<=t+win and o[0]<nd and not any(abs(o[0]-x)<0.5 for x in spawn_t.get(a,[]))]
         sl=set(o[2] for o in c)
         return sl.pop() if len(sl)==1 else None
     lastv={}; out=[]
-    by_slot=collections.defaultdict(list)
-    for o in owner: by_slot[o[2]].append(o)
+    by_slot=collections.defaultdict(list)       # spawn messages only: owner records from agent property lists also describe agents that were already there
+    sp_set=set((round(t_,2),a_) for a_,t_ in spawn_msg)
+    for o in owner:
+        if (round(o[0],2),o[1]) in sp_set: by_slot[o[2]].append(o)
     for k in kills:
         t=k['t']; ks=who(k['killer'],t); vs=who(k['victim'],t)
         late=[]
         if ks is None:
             ks=who_late(k['killer'],t)
             if ks is not None: late.append('killer')
-        if vs is None:
-            vs=who_late(k['victim'],t)
-            if vs is not None: late.append('victim')
+        # a victim whose owner is not known by the time of death stays unknown: guessing it from the agent id's NEXT life (a respawn
+        # ~35 s later) depends on where the capture started, so two recordings of one event would disagree
         dl=None
         if ks is not None:
             w=[x for tt,x in obs.get(ks,[]) if t-0.3<=tt<=t+2.5]
@@ -119,6 +154,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
                 b=[x for tt,x in obs.get(ks,[]) if tt<t-0.3]
                 if b:
                     dl=w[0]-b[-1]
+                    if abs(dl)>=2 and -1<=w[0]<=1: dl=w[0]      # a jump no single kill makes: the scoreboard was reset to 0 without us seeing it, so b[-1] is last round's value
                     if dl==0: dl=None
                 elif -3 <= w[0] < 0: dl = w[0]      # first score ever sent for this player: the server omits a score of 0, so the baseline was 0
         resp=None
@@ -135,4 +171,73 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             pi=[it for tt,sh,it in miss if sh==k['killer'] and -1.0<t-tt<1.0]
             if pi and items and 0<=pi[0]<len(items): wn+=' ('+items[pi[0]][4:]+')'
         out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if dl is not None and dl<0 else '',killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra'),late=late,horse=horse))
+    # Several kills by one player within a few seconds (artillery, canister) share one scoreboard change, so the per-kill test above gives them all the
+    # same verdict. Use the whole change instead: n kills with a net change D contain (n - D) / 2 teamkills. Which of them are teamkills is a guess
+    # (victims with the killer's regiment prefix first) and flagged 'burst'.
+    def _pre(nm):
+        return str(nm).split('_')[0].lower() if isinstance(nm,str) else ''
+    by_k=collections.defaultdict(list)
+    for e in out:
+        if e['mode']==2 and e['killer_slot'] is not None and e['killer_slot']>=0 and e['killer_slot']!=e['victim_slot']: by_k[e['killer_slot']].append(e)
+    for ks,L in by_k.items():
+        L.sort(key=lambda e:e['time']); i=0
+        while i<len(L):
+            j=i
+            while j+1<len(L) and L[j+1]['time']-L[j]['time']<=2.5: j+=1
+            g=L[i:j+1]; i=j+1
+            if len(g)<2: continue
+            t0,t1=g[0]['time'],g[-1]['time']
+            ob=obs.get(ks,[])
+            b=[x for tt,x in ob if tt<t0-0.3]
+            w=[x for tt,x in ob if t0-0.3<=tt<=t1+2.5]
+            n=len(g)
+            if not w:
+                if not b or n%2: continue
+                w=[b[-1]]            # the server only sends a score when it changes: no update after n kills means a net change of 0 (artillery hitting friend and foe)
+            base=b[-1] if b else (0 if -3<=w[0]<=3 else None)
+            if base is None: continue
+            if abs(w[0]-base)>n and abs(w[0])<=n: base=0      # reset to 0 that we did not see (b[-1] is last round's value)
+            cur=base
+            for xi,x in enumerate(w):                        # follow the changes while they can come from these kills; stop at a later reset to 0 (the first change after the kills is theirs: 3 -> 1 after two kills is two teamkills)
+                if xi and abs(x-cur)>=2 and abs(cur)>=2 and -1<=x<=1: break
+                if abs(x-base)>n: break
+                cur=x
+            D=cur-base
+            if (n-D)%2 or not 0<=(n-D)//2<=n: continue
+            tk=(n-D)//2
+            order=sorted(range(n),key=lambda x:(0 if _pre(g[x]['victim'])==_pre(g[x]['killer']) else 1, x))
+            flag=set(order[:tk])
+            for x,e in enumerate(g):
+                e['teamkill']='yes' if x in flag else ''
+                e['burst']=0<tk<n
+    # Cavalry charge kills whose horse has no known owner (spawned unowned): the scoreboard credits the rider. Every score change of +-1 that one of the
+    # player's own kills explains (same sign, within [kill - 0.3, kill + 2.5]) is set aside; the changes left over belong to kills we could not attribute.
+    # A charge kill takes the player of a leftover change in its window when that is the only one; assignments are repeated, so a change claimed by a
+    # neighbouring charge kill no longer counts as a rival. Flagged killer-from-score.
+    ch=collections.defaultdict(list)            # slot -> [(t, delta)]
+    for pl,ob in obs.items():
+        for (t0,v0),(t1,v1) in zip(ob,ob[1:]):
+            if abs(v1-v0)==1: ch[pl].append((t1,v1-v0))
+    left=collections.defaultdict(list)
+    for pl,L in ch.items():
+        own=sorted((e['time'],-1 if e['teamkill'] else 1) for e in out if e['killer_slot']==pl and e['mode']==2)
+        free=sorted(L)
+        for tk_,sg in own:
+            for i,(to,d) in enumerate(free):
+                if tk_-0.3<=to<=tk_+2.5 and d==sg: del free[i]; break
+        left[pl]=free
+    rows=[e for e in out if e['wcode']==3 and e['mode']==2 and (e['killer_slot'] is None or e['killer_slot']<0)]
+    todo=list(rows)
+    while todo:
+        pick=None
+        for lo,hi in ((0.3,0.5),(0.3,2.5)):         # first the changes that arrive with the kill itself, then the wider window
+            for e in todo:
+                c=[(pl,to,d) for pl,L in left.items() for to,d in L if e['time']-lo<=to<=e['time']+hi]
+                if c and len({x[0] for x in c})==1:   # one player (he may have two changes in the window: the nearest is taken)
+                    pick=(e,min(c,key=lambda x:abs(x[1]-e['time']))); break
+            if pick: break
+        if not pick: break
+        e,(pl,to,d)=pick
+        left[pl].remove((to,d)); todo.remove(e)
+        e['killer_slot']=pl; e['killer']=namer(pl,e['time']); e['teamkill']='yes' if d<0 else ''; e['late']=list(e['late'])+['killer-from-score']; e['burst']=False
     return out,local_slot
