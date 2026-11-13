@@ -42,6 +42,25 @@ def build_roster(items, min_count=1):
     for (name, pid), (c, a, b) in rec.items():
         if c >= min_count and (c >= 2 or _plausible_single(name)): out[pid-1].append((a, b, name, c))
     return {s: sorted(v) for s, v in out.items()}
+def merge_joins(roster, recs):
+    """Add the names from parsed join messages (rec['joins'] = [(player id, name)], found by the decoder at any bit offset) to the roster.
+    The byte scan above only matches one of the layouts the record is sent in; this catches the rest. Returns how many entries were new."""
+    agg = {}
+    for r in recs:
+        for pid, name in r.get('joins') or ():
+            a = agg.setdefault((pid, name), [0, r['t'], r['t']])
+            a[0] += 1; a[1] = min(a[1], r['t']); a[2] = max(a[2], r['t'])
+    new = 0
+    for (pid, name), (c, a, b) in agg.items():
+        v = roster.setdefault(pid - 1, [])
+        for i, x in enumerate(v):
+            if x[2] == name:
+                v[i] = (min(x[0], a), max(x[1], b), name, max(x[3], c)); break
+        else:
+            v.append((a, b, name, c)); new += 1
+        v.sort()
+    return new
+
 def lookup(roster, slot, t):
     """Name holding this slot at time t: the latest name first seen at or before t (slots are reused when players leave)."""
     v = roster.get(slot)
