@@ -3,10 +3,10 @@
 """Desktop window for nwkills (PySide6 / Qt 6): load a capture, look at its packets, set the options, convert, browse the result tables."""
 import argparse, os, sys, time, traceback
 
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QThread, QTimer, Signal, QSettings
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPoint, QSortFilterProxyModel, QThread, QTimer, Signal, QSettings
 from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QKeySequence, QAction
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QTabWidget,
+                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QTableView, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
 from . import guilogic as gl
@@ -147,6 +147,64 @@ class ResultsTable(QTableView):
         super().keyPressEvent(ev)
 
 # ================================================================= one results tab
+class ColumnsPopup(QFrame):
+    """The Columns drop-down. Unlike a menu it stays open while columns are ticked; it closes on a click anywhere outside it, or on the Columns button again.
+    Besides one box per column it has one box per group of columns (all kills columns, all columns of one round, ...); a group box is partly ticked when only some of its columns are shown."""
+    def __init__(self, page):
+        super().__init__(page, Qt.Popup)
+        self.page, self.closed_at = page, 0.0
+        self.setFrameShape(QFrame.StyledPanel)
+        heads, hdr = page.headers, page.hdr
+        body = QWidget(); lay = QVBoxLayout(body); lay.setContentsMargins(6, 6, 6, 6); lay.setSpacing(2)
+        top = QHBoxLayout()
+        show_all = QPushButton('Show all'); show_all.clicked.connect(lambda: self.set_columns(range(len(heads)), True))
+        hide_all = QPushButton('Hide all'); hide_all.clicked.connect(lambda: self.set_columns(range(1, len(heads)), False))     # the first column (name / round) stays
+        top.addWidget(show_all); top.addWidget(hide_all); top.addStretch(1); lay.addLayout(top)
+        self.groups = gl.column_groups(heads)
+        self.group_boxes = []
+        if self.groups:
+            lab = QLabel('Groups'); lab.setStyleSheet('font-weight: bold;'); lay.addWidget(lab)
+            for gi, (label, members) in enumerate(self.groups):
+                cb = QCheckBox(label); cb.setTristate(True); cb.clicked.connect(lambda _c=False, gi=gi: self.toggle_group(gi))
+                lay.addWidget(cb); self.group_boxes.append(cb)
+            line = QFrame(); line.setFrameShape(QFrame.HLine); line.setFrameShadow(QFrame.Sunken); lay.addWidget(line)
+            lab = QLabel('Columns'); lab.setStyleSheet('font-weight: bold;'); lay.addWidget(lab)
+        self.col_boxes = []
+        for i, h in enumerate(heads):
+            cb = QCheckBox(h); cb.toggled.connect(lambda on, i=i: self.set_columns([i], on)); lay.addWidget(cb); self.col_boxes.append(cb)
+        lay.addStretch(1)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); scroll.setWidget(body)
+        outer = QVBoxLayout(self); outer.setContentsMargins(2, 2, 2, 2); outer.addWidget(scroll)
+        self.body, self.scroll = body, scroll
+        self.refresh()
+
+    def hidden(self): return {i for i in range(len(self.page.headers)) if self.page.hdr.isSectionHidden(i)}
+
+    def refresh(self):
+        hid = self.hidden()
+        for i, cb in enumerate(self.col_boxes):
+            cb.blockSignals(True); cb.setChecked(i not in hid); cb.blockSignals(False)
+        states = {0: Qt.Unchecked, 1: Qt.PartiallyChecked, 2: Qt.Checked}
+        for cb, (_label, members) in zip(self.group_boxes, self.groups):
+            cb.blockSignals(True); cb.setCheckState(states[gl.group_state(hid, members)]); cb.blockSignals(False)
+
+    def set_columns(self, indexes, show):
+        for i in indexes: self.page.hdr.setSectionHidden(i, not show)
+        self.page.hdr.reposition(); self.refresh()
+
+    def toggle_group(self, gi):
+        """A group that is fully shown gets hidden; otherwise (hidden or partly shown) all its columns get shown."""
+        members = self.groups[gi][1]
+        self.set_columns(members, gl.group_state(self.hidden(), members) != 2)
+
+    def hideEvent(self, e):
+        self.closed_at = time.monotonic(); super().hideEvent(e)
+
+    def open_under(self, button):
+        self.body.adjustSize()
+        w = max(self.body.sizeHint().width() + 30, 260); h = min(self.body.sizeHint().height() + 10, 460)
+        self.resize(w, h); self.move(button.mapToGlobal(QPoint(0, button.height()))); self.show()
+
 class ResultsPage(QWidget):
     jumpRequested = Signal(float)
     note = Signal(str)
@@ -177,7 +235,8 @@ class ResultsPage(QWidget):
         top = QHBoxLayout()
         self.ci = QCheckBox('Ignore case'); self.ci.setChecked(True); self.ci.toggled.connect(self.apply)
         clear = QPushButton('Clear filters'); clear.clicked.connect(self.hdr.clear_filters)
-        self.cols_btn = QToolButton(); self.cols_btn.setText('Columns'); self.cols_btn.setPopupMode(QToolButton.InstantPopup)
+        self.cols_btn = QToolButton(); self.cols_btn.setText('Columns ▾'); self.cols_btn.clicked.connect(self.toggle_columns)
+        self.cols_popup = None
         self.build_columns_menu()
         copy = QPushButton('Copy selection'); copy.clicked.connect(lambda: self.copy(False))
         copyh = QPushButton('Copy with headers'); copyh.clicked.connect(lambda: self.copy(True))
@@ -195,12 +254,14 @@ class ResultsPage(QWidget):
         self.apply()
 
     def build_columns_menu(self):
-        menu = QMenu(self.cols_btn)
-        for i, h in enumerate(self.headers):
-            a = QAction(h, menu); a.setCheckable(True); a.setChecked(not self.hdr.isSectionHidden(i))
-            a.toggled.connect(lambda on, i=i: self.hdr.setSectionHidden(i, not on) or self.hdr.reposition())
-            menu.addAction(a)
-        self.cols_btn.setMenu(menu)
+        """(Re)build the Columns drop-down for the current headers."""
+        if self.cols_popup is not None: self.cols_popup.hide(); self.cols_popup.deleteLater()
+        self.cols_popup = ColumnsPopup(self)
+
+    def toggle_columns(self):
+        pop = self.cols_popup
+        if pop.isVisible(): pop.hide()
+        elif time.monotonic() - pop.closed_at > 0.25: pop.refresh(); pop.open_under(self.cols_btn)      # (a click on the button that closed it must not reopen it)
 
     def replace_data(self, headers, rows, sort_name=None, sort_order=Qt.DescendingOrder):
         """Swap in new contents (the Players table is recomputed from the Kills tab). Filter texts, hidden columns and the sort order are kept by column NAME."""
@@ -665,6 +726,18 @@ def selftest():
     assert pp.proxy.rowCount() == 2 and pp.hdr.edits[0].text() == 'a'
     assert [pp.proxy.index(r, 0).data() for r in range(2)] == ['a', 'ab']      # kills, descending
     rows_, any_f, chosen = pg.scope(); assert any_f is False or True
+    # columns drop-down: single columns and groups
+    gp = ResultsPage('Players', ['player', 'kills', 'deaths', 'R1(live)_kills', 'R1(live)_deaths', 'R2(live)_kills', 'R2(live)_deaths'], [['a', '1', '1', '1', '1', '0', '0']])
+    pop = gp.cols_popup; names = [l for l, _m in pop.groups]
+    assert 'All kills columns' in names and 'Round R1(live)' in names, names
+    gk = names.index('All kills columns'); gp.cols_popup.toggle_group(gk)
+    assert [gp.hdr.isSectionHidden(i) for i in (1, 3, 5)] == [True, True, True] and not gp.hdr.isSectionHidden(2)
+    assert pop.group_boxes[gk].checkState() == Qt.Unchecked
+    pop.set_columns([3], True); assert pop.group_boxes[gk].checkState() == Qt.PartiallyChecked
+    pop.toggle_group(gk); assert not any(gp.hdr.isSectionHidden(i) for i in (1, 3, 5))           # partly shown -> all shown
+    pop.set_columns(range(1, 7), False); assert all(gp.hdr.isSectionHidden(i) for i in range(1, 7)) and not gp.hdr.isSectionHidden(0)
+    pop.set_columns(range(7), True); assert not any(gp.hdr.isSectionHidden(i) for i in range(7))
+    assert pg.cols_popup.groups == []
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)

@@ -63,6 +63,34 @@ def chip_predicate(headers, kinds, rounds):
         if cid in kinds: allowed |= ks
     return lambda row: row[ki] in allowed or row[ri] in rounds
 
+# ---------------------------------------------------------------- column groups (Players table)
+_ROUND_COL = re.compile(r'^(R[^_]*)_(.+)$')
+
+def column_groups(headers):
+    """Groups of columns to show or hide together: -> [(label, [column indexes])], only groups with at least two columns.
+    The Players table has a total and one column per round for every measure ('kills', 'R3(live)_kills', ...): one group per measure, one per round,
+    and the per-round columns / the totals as a whole. The first column (the player name) is in no group."""
+    by_metric, by_round, totals, per_round = {}, {}, [], []
+    for i, h in enumerate(headers):
+        if i == 0: continue
+        m = _ROUND_COL.match(h)
+        if m:
+            by_round.setdefault(m.group(1), []).append(i); per_round.append(i)
+            by_metric.setdefault(m.group(2), []).append(i)
+        else:
+            totals.append(i)
+            by_metric.setdefault('score_at_capture' if h.startswith('score_at_capture') else h, []).append(i)
+    if not per_round: return []
+    out = [('All %s columns' % k, v) for k, v in by_metric.items()]
+    out += [('Round %s' % k, v) for k, v in by_round.items()]
+    out += [('All per-round columns', per_round), ('All total columns', totals)]
+    return [(l, v) for l, v in out if len(v) >= 2]
+
+def group_state(hidden, members):
+    """0 = none of the group's columns shown, 2 = all shown, 1 = some (a Qt check state)."""
+    shown = sum(1 for i in members if i not in hidden)
+    return 0 if shown == 0 else (2 if shown == len(members) else 1)
+
 # ---------------------------------------------------------------- copy / export text
 def _clean(v): return re.sub(r'[\t\r\n]+', ' ', v)
 

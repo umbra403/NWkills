@@ -60,6 +60,16 @@ def test_player_totals():
     h, r = gl.player_totals(kh, kr, ph, pr, exclude_warm=False, all_players=True); d = {x[0]: dict(zip(h, x)) for x in r}
     assert 'Z' in d and d['A']['deaths'] == '2' and 'R1(warm-up)_deaths' in d['A']
 
+def test_column_groups():
+    h = ['player', 'kills', 'deaths', 'score_at_capture_start', 'score_at_capture_end', 'score_gap', 'R1(live)_kills', 'R1(live)_deaths', 'R2(pre-live)_kills', 'R2(pre-live)_deaths']
+    g = dict(gl.column_groups(h))
+    assert g['All kills columns'] == [1, 6, 8] and g['All deaths columns'] == [2, 7, 9]
+    assert g['All score_at_capture columns'] == [3, 4] and 'All score_gap columns' not in g          # a single column is no group
+    assert g['Round R1(live)'] == [6, 7] and g['Round R2(pre-live)'] == [8, 9]
+    assert g['All per-round columns'] == [6, 7, 8, 9] and g['All total columns'] == [1, 2, 3, 4, 5]
+    assert gl.column_groups(['round', 'time_s', 'killer', 'review']) == []                          # the kills table has none
+    assert gl.group_state({1, 2}, [1, 2]) == 0 and gl.group_state({1}, [1, 2]) == 1 and gl.group_state(set(), [1, 2]) == 2
+
 if __name__ == '__main__':
     for n, f in list(globals().items()):
         if n.startswith('test_'): f(); print('ok', n)
