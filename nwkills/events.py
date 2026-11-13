@@ -148,6 +148,27 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
     sp_set=set((round(t_,2),a_) for a_,t_ in spawn_msg)
     for o in owner:
         if (round(o[0],2),o[1]) in sp_set: by_slot[o[2]].append(o)
+    # The client shows the RIDER as the killer when the killer agent is a horse that has a rider (killfeed routine 0x4bb310: agent kind 1 -> the agent in its
+    # rider field +0x118, which the server keeps current with message type 30). Do the same: the latest link of that horse since its latest spawn message.
+    link_hist=collections.defaultdict(list)       # horse agent -> [(t, rider agent or -1)]
+    for r in recs:
+        for a_,b_ in r.get('links') or (): link_hist[a_].append((r['t'],b_))
+        # a rider is spawned together with its horse: the rider's spawn message (it has an owner) is followed directly by the horse's (no owner, team 0)
+        seq=[v for ty,v,w in r['msgs'] if ty==5 and len(v)>21 and v[1]>0]
+        for a_,b_ in zip(seq,seq[1:]):
+            if a_[2]>0 and b_[2]==0 and b_[4]==0 and r['t']>=30: link_hist[b_[1]-1].append((r['t'],a_[1]-1))      # not in the first 30 s: the list of agents already on the map is in no useful order
+    for a_ in link_hist: link_hist[a_].sort()
+    for k in kills:
+        if k['wcode']==3 and k['killer'] in link_hist:
+            sp=max([x for x in spawn_t.get(k['killer'],()) if x<=k['t']+0.3],default=-1e9)
+            ln=[x for x in link_hist[k['killer']] if sp-0.05<=x[0]<=k['t']+0.3]
+            if not ln: continue
+            lt,rd=ln[-1]
+            # the client only substitutes a rider that is an active agent: one that has died (or been re-spawned) since the link is gone
+            gone = rd<0 or any(lt+0.05<x<k['t']+0.3 for x in death_t.get(rd,())) or any(lt+0.5<x<=k['t']+0.3 for x in spawn_t.get(rd,()))
+            if not gone:
+                k['horse_agent']=k['killer']; k['killer']=rd; k['via_link']=True
+            else: k['link_none']=True      # no rider (dismounted, or the rider died): the scoreboard may still credit the last rider, so the score decides first
     for k in kills:
         t=k['t']; ks=who(k['killer'],t); vs=who(k['victim'],t)
         late=[]
@@ -156,12 +177,13 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             if ks is not None: late.append('killer')
         # a victim whose owner is not known by the time of death stays unknown: guessing it from the agent id's NEXT life (a respawn
         # ~35 s later) depends on where the capture started, so two recordings of one event would disagree
-        dl=None
+        dl=None; dl_base_t=None
         if ks is not None:
             w=[x for tt,x in obs.get(ks,[]) if t-0.3<=tt<=t+2.5]
             if w:
                 b=[x for tt,x in obs.get(ks,[]) if tt<t-0.3]
                 if b:
+                    dl_base_t=[tt for tt,x in obs.get(ks,[]) if tt<t-0.3][-1]
                     dl=w[0]-b[-1]
                     if abs(dl)>=2 and -1<=w[0]<=1: dl=w[0]      # a jump no single kill makes: the scoreboard was reset to 0 without us seeing it, so b[-1] is last round's value
                     if dl==0: dl=None
@@ -186,7 +208,7 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
             kt,vt=team_of(k['killer'],t),team_of(k['victim'],t)
             if kt is not None and vt is not None: tm=(kt==vt)
         tk_now = tm if tm is not None else (dl is not None and dl<0)
-        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if tk_now else '',tk_team=tm,killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra'),late=late,horse=horse))
+        out.append(dict(time=round(t,2),killer=namer(ks,t),victim=namer(vs,t),weapon=wn,teamkill='yes' if tk_now else '',tk_team=tm,killer_slot=ks,victim_slot=vs,killer_agent=k['killer'],victim_agent=k['victim'],hit=k['hit'],dl=dl,dl_base_t=dl_base_t,mode=k.get('mode'),respawn=resp,wcode=k['wcode'],nextra=k.get('nextra'),late=late,horse=horse,via_link=k.get('via_link',False),link_none=k.get('link_none',False)))
     # Several kills by one player within a few seconds (artillery, canister) share one scoreboard change, so the per-kill test above gives them all the
     # same verdict. Use the whole change instead: n kills with a net change D contain (n - D) / 2 teamkills. Which of them are teamkills is a guess
     # (victims with the killer's regiment prefix first) and flagged 'burst'.
@@ -261,7 +283,40 @@ def decode(recs,roster=None,local_slot=None,items=None,namer=None):
         e,(pl,to,d)=pick
         left[pl].remove((to,d)); todo.remove(e)
         e['killer_slot']=pl; e['killer']=namer(pl,e['time']); e['teamkill']='yes' if d<0 else ''; e['tk_team']=None; e['late']=list(e['late'])+['killer-from-score']; e['burst']=False
+    # A charge kill that nobody's score can claim, with no unexplained change in the window at all, was most likely made by a horse without a rider
+    # (horses move on their own and can bump into players hard enough to kill). The kill is nobody's; the victim's death still counts.
+    for e in todo:
+        # nobody rides the horse (link says so, or its rider is dead) and nobody's score claims the kill: a horse without a rider
+        if e.get('link_none') and not any(e['time']-0.3<=to<=e['time']+2.5 for pl,L in left.items() for to,d in L):
+            e['killer']='(runaway horse)'; e['runaway']=True
     # cross-check: a team verdict that the killer's own score change contradicts (single kills only; a volley shares one change)
+    # Events of one player a fraction of a second apart (a kill and then a fall or drowning) each have their own score step: the window above read the
+    # first step for both. When the number of steps equals the number of events, hand them out in order.
+    byk=collections.defaultdict(list)
     for e in out:
-        e['tk_check']= e['tk_team'] is not None and not e.get('in_group') and e['dl'] is not None and (e['dl']<0)!=e['tk_team']
+        if e['killer_slot'] is not None and e['killer_slot']>=0 and not e.get('in_group'): byk[e['killer_slot']].append(e)
+    for ks_,L in byk.items():
+        L.sort(key=lambda x:x['time']); i=0
+        while i<len(L):
+            j=i
+            while j+1<len(L) and L[j+1]['time']-L[j]['time']<3.0: j+=1
+            if j>i:
+                grp=L[i:j+1]; ob=obs.get(ks_,[])
+                base=[v for tt,v in ob if tt<grp[0]['time']-0.3]
+                st=[(tt,v) for tt,v in ob if grp[0]['time']-0.3<=tt<=grp[-1]['time']+2.5]
+                if base and st:
+                    vals=[base[-1]]+[v for tt,v in st]
+                    steps=[b-a for a,b in zip(vals,vals[1:]) if b!=a]
+                    if len(steps)==len(grp) and all(abs(x)==1 for x in steps) and all(b['time']>a['time'] for a,b in zip(grp,grp[1:])):      # events with the same timestamp are a volley: handled below
+                        for e,d in zip(grp,steps):
+                            e['dl']=d
+                            if e['tk_team'] is None: e['teamkill']='yes' if d<0 else ''
+            i=j+1
+    # A kill by the same player within a few seconds shares the score change (the window above reads both), so the check says nothing then.
+    kt=collections.defaultdict(list)
+    for e in out:
+        if e['killer_slot'] is not None and e['killer_slot']>=0: kt[e['killer_slot']].append(e['time'])
+    for e in out:
+        crowded=e['killer_slot'] is not None and sum(1 for x in kt.get(e['killer_slot'],()) if abs(x-e['time'])<3.0)>1
+        e['tk_check']= e['tk_team'] is not None and not e.get('in_group') and not crowded and e['dl'] is not None and (e['dl']<0)!=e['tk_team']
     return out,local_slot

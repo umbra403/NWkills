@@ -28,7 +28,7 @@ def one(a):
     queued = len(pl) > 7 and pl[7] == 0
     if queued: pl = pl[:7] + pl[8:]         # count -1: the game stores the packet and replays it later without the count byte; its tail is never read
     n = pl[7]-1 if len(pl) > 7 else 0
-    rec = dict(i=k, t=ts, L=len(pl)*8, n=n, msgs=[], joins=[], ev=[], txt=[], rst=0, tail=None, err=None, q=queued)
+    rec = dict(i=k, t=ts, L=len(pl)*8, n=n, msgs=[], joins=[], links=[], ev=[], txt=[], rst=0, tail=None, err=None, q=queued)
     pos = 68
     if n > 0:
         try: r, cur, ms = msgs_only(pl)
@@ -46,6 +46,8 @@ def one(a):
                 if len(f) >= 4 and f[1][0] == 8 and f[2][0] == 16 and 3 <= f[2][1] <= 40 and len(f) >= 3 + f[2][1]:
                     ch = [v for b, v in f[3:3 + f[2][1]] if b == 8]
                     if len(ch) == f[2][1] and all(32 <= x < 127 for x in ch): rec['joins'].append((f[1][1], ''.join(map(chr, ch))))
+        # mount/rider link (type 30: agent+1, rider agent+1; 0 = none): what the client keeps in the horse agent's rider field (+0x118)
+        rec['links'] = [(m[3][1][1] - 1, m[3][2][1] - 1) for m in ms if m[2] == 30 and len(m[3]) >= 3 and m[3][1][0] == 10 and m[3][2][0] == 10]
         rec['txt'] = [''.join(chr(v) for b, v in m[3] if b == 8 and 32 <= v < 127) for m in ms if m[2] == 39]
         rec['rst'] = sum(1 for m in ms if m[2] == 41 and len(m[3]) == 1 and m[3][0][0] in (1, 3))
         rec['ev'] = [(m[2], m[3][2][1], [v for b, v in m[3][3:]]) for m in ms if m[2] in (36, 37, 38) and len(m[3]) >= 4 and m[3][1][1] == 107]

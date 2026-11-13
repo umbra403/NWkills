@@ -154,7 +154,7 @@ def player_totals(kh, krows, ph, prows, net=True, exclude_warm=True, all_players
             if row[KI] not in ('?', '(AI)', '(world)'): bump(row[KI], 'ai_kills')
             continue
         tk = row[TKI] != ''
-        if dt == 'kill' and not tk: bump(row[KI], 'kills')
+        if dt == 'kill' and not tk and row[KI] != '(runaway horse)': bump(row[KI], 'kills')
         bump(row[VI], 'deaths')
         if tk: bump(row[KI], 'teamkills')
     rounds = sorted(kinds, key=lambda s: (_int(s) is None, _int(s) or 0, s))
