@@ -1,7 +1,7 @@
 # nwkills - read the Mount & Blade: Warband Napoleonic Wars killfeed from a Wireshark capture.
 # Copyright (C) 2026 the nwkills authors. Licensed under the GNU General Public License v3.0 or later; see LICENSE.
 """Desktop window for nwkills (PySide6 / Qt 6): load a capture, look at its packets, set the options, convert, browse the result tables."""
-import argparse, os, sys, time, traceback
+import argparse, glob, os, shutil, sys, tempfile, time, traceback
 
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPoint, QSortFilterProxyModel, QThread, QTimer, Signal, QSettings
 from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QKeySequence, QAction
@@ -353,6 +353,7 @@ class ResultsPage(QWidget):
         return [self.headers[c] for c in vis], rows
     def export(self):
         base = self.title.lower().replace(' ', '') + '.csv'
+        if getattr(self, 'export_dir', ''): base = os.path.join(self.export_dir, base)
         path, _ = QFileDialog.getSaveFileName(self, 'Export shown rows', base, 'CSV files (*.csv)')
         if not path: return
         heads, rows = self.shown()
@@ -431,7 +432,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle('nwkills'); self.resize(1280, 820); self.setAcceptDrops(True)
         self.cfg = QSettings('nwkills', 'nwkills')
-        self.path = None; self.loader = self.converter = self.indexer = None
+        self.path = None; self.loader = self.converter = self.indexer = None; self.tmp = None
+        self.sweep_tmp()
         self.pages = []; self.kills_page = self.players_page = self.players_orig = None
 
         root = QWidget(); self.setCentralWidget(root)
@@ -498,13 +500,13 @@ class MainWindow(QMainWindow):
         self.me = QLineEdit(); self.me.setPlaceholderText('part of your own player name'); f1.addRow('My player name (--me)', self.me)
         g2 = QGroupBox('Performance'); f2 = QFormLayout(g2)
         self.jobs = QSpinBox(); self.jobs.setRange(1, 64); self.jobs.setValue(max(1, os.cpu_count() or 2)); f2.addRow('Worker processes (--jobs)', self.jobs)
-        self.cache = QCheckBox('Cache decoded packets (re-runs skip decoding)  (--cache)'); self.cache.setChecked(True); f2.addRow(self.cache)
+        self.cache = QCheckBox('Cache decoded packets in the export folder (re-runs skip decoding)  (--cache)'); self.cache.setChecked(False); f2.addRow(self.cache)
         row = QHBoxLayout(); self.use_limit = QCheckBox('Only read the first'); self.limit = QSpinBox(); self.limit.setRange(100, 100000000); self.limit.setValue(200000); self.limit.setEnabled(False)
         row.addWidget(self.use_limit); row.addWidget(self.limit); row.addWidget(QLabel('packets (--limit, for quick tests)')); row.addStretch(1)
         self.use_limit.toggled.connect(self.limit.setEnabled); f2.addRow(row)
-        g3 = QGroupBox('Output'); f3 = QFormLayout(g3)
-        row = QHBoxLayout(); self.outdir = QLineEdit(); br = QPushButton('Browse…'); br.clicked.connect(self.browse_out); row.addWidget(self.outdir, 1); row.addWidget(br); f3.addRow('Output folder (--out)', row)
-        self.outdir.setPlaceholderText('empty = next to the capture')
+        g3 = QGroupBox('Export'); f3 = QFormLayout(g3)
+        row = QHBoxLayout(); self.outdir = QLineEdit(); br = QPushButton('Browse…'); br.clicked.connect(self.browse_out); row.addWidget(self.outdir, 1); row.addWidget(br); f3.addRow('Default export folder (--out)', row)
+        self.outdir.setPlaceholderText('empty = next to the capture. Converting writes no files here: CSV files appear only when you export.')
         g4 = QGroupBox('Equivalent command line'); l4 = QVBoxLayout(g4)
         self.cmd = QLabel(); self.cmd.setWordWrap(True); self.cmd.setTextInteractionFlags(Qt.TextSelectableByMouse); self.cmd.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont)); l4.addWidget(self.cmd)
         for g in (g1, g2, g3, g4): lay.addWidget(g)
@@ -532,16 +534,18 @@ class MainWindow(QMainWindow):
                     limit=self.limit.value() if self.use_limit.isChecked() else None)
     def update_cmd(self, *_a): self.cmd.setText(gl.command_line(self.options()))
     def browse_out(self):
-        d = QFileDialog.getExistingDirectory(self, 'Output folder', self.outdir.text() or os.path.expanduser('~'))
+        d = QFileDialog.getExistingDirectory(self, 'Default export folder', self.outdir.text() or os.path.expanduser('~'))
         if d: self.outdir.setText(d)
+    def export_folder(self):
+        return self.outdir.text().strip() or (os.path.dirname(os.path.abspath(self.path)) if self.path else os.path.expanduser('~'))
     def restore_options(self):
         c = self.cfg
         self.me.setText(c.value('me', '')); self.outdir.setText(c.value('outdir', ''))
-        self.jobs.setValue(int(c.value('jobs', self.jobs.value()))); self.cache.setChecked(c.value('cache', 'true') == 'true')
+        self.jobs.setValue(int(c.value('jobs', self.jobs.value()))); self.cache.setChecked(c.value('cache_on', 'false') == 'true')
         self.update_cmd()
     def save_options(self):
         c = self.cfg; c.setValue('me', self.me.text()); c.setValue('outdir', self.outdir.text()); c.setValue('jobs', self.jobs.value())
-        c.setValue('cache', 'true' if self.cache.isChecked() else 'false')
+        c.setValue('cache_on', 'true' if self.cache.isChecked() else 'false')
 
     # ------------------------------------------------------------ loading
     def open_dialog(self):
@@ -618,11 +622,14 @@ class MainWindow(QMainWindow):
     def convert(self):
         if not self.path: return
         self.save_options(); o = self.options()
-        if o['out'] and not os.path.isdir(os.path.dirname(o['out'])):
-            try: os.makedirs(os.path.dirname(o['out']))
-            except OSError as ex: QMessageBox.warning(self, APP, 'Cannot create the output folder:\n%s' % ex); return
-        self.stop_index()
-        ns = argparse.Namespace(pcap=o['pcap'], out=o['out'], port=o['port'], me=o['me'], jobs=o['jobs'], cache=o['cache'], limit=o['limit'])
+        if o['cache'] and not os.path.isdir(os.path.dirname(o['cache'])):
+            try: os.makedirs(os.path.dirname(o['cache']))
+            except OSError as ex: QMessageBox.warning(self, APP, 'Cannot create the folder for the cache:\n%s' % ex); return
+        self.stop_index(); self.drop_tmp()
+        # The converter writes its files into a temporary folder; the tables are read into memory and the folder is deleted. CSV files are only written by Export.
+        self.tmp = tempfile.mkdtemp(prefix='nwkills-')
+        out = os.path.join(self.tmp, os.path.basename(o['out']))
+        ns = argparse.Namespace(pcap=o['pcap'], out=out, port=o['port'], me=o['me'], jobs=o['jobs'], cache=o['cache'], limit=o['limit'])
         self.log.clear(); self.go.setEnabled(False); self.stop.setEnabled(True)
         self.stage_bar.setRange(0, 100); self.stage_bar.setValue(0); self.all_bar.setValue(0); self.stage_lbl.setText('Starting …')
         self.t_start = time.time()
@@ -639,7 +646,17 @@ class MainWindow(QMainWindow):
         else: self.stage_bar.setRange(0, 100); self.stage_bar.setValue(int(sfrac * 100))
         self.all_bar.setValue(int(overall))
     def add_log(self, text): self.log.appendPlainText(text)
+    def drop_tmp(self):
+        if self.tmp: shutil.rmtree(self.tmp, ignore_errors=True); self.tmp = None
+    @staticmethod
+    def sweep_tmp():
+        """Remove temporary result folders that an earlier run (crashed, killed) left behind: old, and holding nothing but csv files."""
+        for d in glob.glob(os.path.join(tempfile.gettempdir(), 'nwkills-*')):
+            try:
+                if os.path.isdir(d) and time.time() - os.path.getmtime(d) > 3600 and all(f.lower().endswith('.csv') for f in os.listdir(d)): shutil.rmtree(d, ignore_errors=True)
+            except OSError: pass
     def on_failed(self, msg):
+        self.drop_tmp()
         self.stage_bar.setRange(0, 100); self.stage_bar.setValue(0); self.all_bar.setValue(0); self.go.setEnabled(True); self.stop.setEnabled(False)
         if not msg: self.stage_lbl.setText('Cancelled'); self.statusBar().showMessage('Cancelled.'); return
         self.stage_lbl.setText('Failed'); self.statusBar().showMessage('Conversion failed.'); self.add_log(msg)
@@ -647,8 +664,9 @@ class MainWindow(QMainWindow):
     def on_done(self, paths):
         self.go.setEnabled(True); self.stop.setEnabled(False); self.stage_bar.setRange(0, 100); self.stage_bar.setValue(100); self.all_bar.setValue(100); self.stage_lbl.setText('Finished')
         try: self.show_results(paths)
-        except Exception: self.add_log(traceback.format_exc()); QMessageBox.warning(self, APP, 'The CSV files were written, but could not be shown:\n' + traceback.format_exc()[-400:]); return
-        self.statusBar().showMessage('Done in %.0f s. CSV files are in %s' % (time.time() - self.t_start, os.path.dirname(paths['kills'])))
+        except Exception: self.add_log(traceback.format_exc()); QMessageBox.warning(self, APP, 'The results could not be shown:\n' + traceback.format_exc()[-400:]); return
+        finally: self.drop_tmp()
+        self.statusBar().showMessage('Done in %.0f s. Nothing has been written to disk: use Export to save CSV files.' % (time.time() - self.t_start))
 
     # ------------------------------------------------------------ results
     def show_results(self, paths):
@@ -660,6 +678,7 @@ class MainWindow(QMainWindow):
             if not p or not os.path.exists(p): continue
             h, rows = gl.read_csv_table(p)
             page = ResultsPage(title, h, rows, with_chips=chips, round_kinds=round_kinds)
+            page.export_dir = self.export_folder()
             page.note.connect(self.statusBar().showMessage); page.jumpRequested.connect(self.show_in_packets)
             self.view_connect(page)
             self.rtabs.addTab(page, '%s (%d)' % (title, len(rows))); self.pages.append(page)
@@ -672,7 +691,7 @@ class MainWindow(QMainWindow):
             self.ptot_timer = QTimer(self); self.ptot_timer.setSingleShot(True); self.ptot_timer.setInterval(200); self.ptot_timer.timeout.connect(self.refresh_players)
             self.kills_page.scopeChanged.connect(self.ptot_timer.start); self.neg.toggled.connect(self.refresh_players)
             self.refresh_players()
-        self.res_info.setText('Output folder: %s' % os.path.dirname(paths['kills']))
+        self.res_info.setText('The results are held in memory only. Export saves CSV files.')
         self.tabs.setTabEnabled(2, True); self.tabs.setCurrentIndex(2)
     def refresh_players(self):
         """Players tab = totals of the kill rows the Kills tab shows right now."""
@@ -688,7 +707,7 @@ class MainWindow(QMainWindow):
         page.view.selectionModel().selectionChanged.connect(lambda *_a, p=page: p.update_status())
     def export_all(self):
         if not self.pages: return
-        d = QFileDialog.getExistingDirectory(self, 'Export all tables (unfiltered) to…', self.outdir.text() or os.path.expanduser('~'))
+        d = QFileDialog.getExistingDirectory(self, 'Export all tables (unfiltered) to…', self.export_folder())
         if not d: return
         try:
             for p in self.pages: gl.write_csv_table(os.path.join(d, p.title.lower() + '.csv'), p.headers, p.rows)      # Players = the current Kills filters
@@ -699,6 +718,7 @@ class MainWindow(QMainWindow):
         self.save_options(); self.stop_index()
         if self.converter and self.converter.isRunning():
             self.converter.cancel(); self.converter.wait(5000)
+        self.drop_tmp()
         ev.accept()
 
 def selftest():
