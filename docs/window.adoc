@@ -1,0 +1,42 @@
+= The window
+:toc:
+
+Start `nwkills-gui.exe` (or `python nwkills_gui.py [capture.pcapng]`). Open a `.pcapng` with the button or drop it onto the
+window. Four tabs: Packets, Options, Results and Capture.
+
+== Packets
+Lists the server's packets in the style of Wireshark: a regular-expression display filter, the message tree and a hex dump
+of the selected packet. "Index message types" lets the filter search message types too.
+
+== Options
+Mirrors the command line: port, your name, worker processes, cache, packet limit and the default export folder. It also
+shows the equivalent command line.
+
+*Convert* runs the same pipeline as the command line, with a stage bar and an overall bar, but writes no files you keep.
+The CSV files are produced in a temporary folder, read into the tables and deleted at once. Files appear only when you
+press an Export button, which starts in the default export folder (empty: next to the capture). The decoded-packet cache is
+off by default; when switched on it is saved in that folder so later runs are faster.
+
+== Results
+One tab per CSV file. Click a column label to sort. The box under each label is a regular expression for that column; all
+boxes must match, and the "Ignore case" box applies to all of them.
+
+On *Kills*, the round chips select any combination of Live, Pre-live, Pre-live + live, Warm-up and single rounds.
+
+*Players is computed from whatever the Kills tab shows.* The round chips and column filters there decide which kills are
+counted and which per-round columns appear. With no round chosen, warm-up rounds are left out, as in the CSV. The "Teamkills
+count negatively" box (on by default) makes kills = kills - teamkills, in the totals and per round; switched off, kills are
+kills only. Score columns come from the scoreboard data for the included rounds. Unfiltered, the table equals the CSV's totals.
+
+The *Columns* drop-down stays open while you tick columns; click the button again or anywhere else to close it. In the
+Players tab it also has group boxes that show or hide several columns at once: all `kills` columns (the total and every
+round), all `deaths`, `teamkills` or `score_gap` columns, all columns of one round, all per-round columns, or all totals. A
+group box is half ticked when only some of its columns are shown. "Show all" and "Hide all" do what they say (the first
+column stays).
+
+Select cells (drag, Shift/Ctrl, or the row numbers) and press Ctrl+C to copy them as tab-separated text that pastes into
+Excel, Sheets or a CSV editor ("Copy with headers" adds the header row). "Export shown rows" saves exactly what the table
+shows, in its current order and columns. "Show in Packets" jumps from a kill to its packet.
+
+== Capture
+See link:capturing.adoc[Capturing].
