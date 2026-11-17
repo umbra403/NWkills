@@ -42,7 +42,7 @@ The server sends a player's score only when it changes, and the scoreboard is re
 score check therefore compares each kill with the score change in a short window around it (0.3 s before to 2.5 s after).
 
 * Scores are read only from packets that parsed to the end (the big map-change blocks give garbage values).
-* The reset after a round start can land more than a minute late (seen: 64 s). When the score jumps to 0 (or -1 or 1) by 2 or
+* After a map change the scoreboard is zero from the start of the new round, but the capture only shows it once loading ends, which can be more than a minute later (seen: 64 s). When the score jumps to 0 (or -1 or 1) by 2 or
   more in the first 2 minutes of a round, counting starts from that value. A player whose score was never re-sent after the
   reset is counted from 0. An admin "Has reset the Map" can also zero scores after the round started.
 * Rounds with a jump of more than 15 inside the round (a player rejoined or a slot was reused) are skipped.
@@ -70,19 +70,28 @@ A dead rider still gets the score credit for the kill.
 
 [[rounds]]
 == Rounds
-Round starts are found in this order of preference:
+Round borders are read straight from two server messages, with nothing inferred:
 
-. *Server messages:* the server's chat lines "Changed the map to ..." (map load) and "Has reset the Map." (admin reset, also a
-  type-41 marker). Admin pattern: a map change starts a warm-up round (friendly fire off), then the reset starts the live round.
-. *Restarts with no reset line:* the server prints "Friendly fire is now on" a fixed delay after every round start (parsed from
-  the "Friendly fire will turn back on after N seconds" line; 30 s on NWE, 20 s on some servers). Start = that time minus the
-  delay.
-. *Tickets (NWE):* the team-ticket event adds `tickets_zero_at_s` (round decided) and `kills_after_tickets_zero`.
-. *Fallback* when such chat lines are missing: activity lulls and map-load signals.
+. *Message type 0* is a map change (the client starts loading the new map). It arrives at the same moment as the chat line
+  "Changed the map to ...".
+. *Message type 41* is a reset of the same map. It arrives at the same moment as the chat line "Has reset the Map.", and also
+  where an admin reset has no chat line at all.
 
-A segment is a *warm-up* when it starts with a map change (a round only goes live with an admin reset; the review flag says
-whether a reset followed), when two resets come less than 60 s apart, or when an admin says "reset and live" or "Live on
-Reset!" (also "rest/restart ... live") inside it.
+The server sends each of them several times in a row with a running count in the first field (0, 1, 2 ...); the count starting
+again is the next announcement. Every announcement is a round border and `started_by` in the rounds file says which message it
+was (`map change message` or `reset message`). Nothing is merged: a map that is changed twice in a minute is two rounds, the
+first of them short.
+
+Only the *type* of a round is inferred. A round is a *warm-up* when it starts with a map change (a round goes live with a
+reset; the review flag says whether one followed), when two resets come less than 60 s apart, or when an admin says "reset and
+live" or "Live on Reset!" (also "rest/restart ... live") inside it. The team-ticket event (NWE) adds `tickets_zero_at_s` (round
+decided) and `kills_after_tickets_zero`.
+
+A capture on a server that sends neither message falls back to the team tickets, then to activity lulls and map-load signals.
+(A saved cache made by an older version has no such messages and uses the chat lines instead.)
+
+After a map change the client is busy loading, in the capture this shows as stored packets only, for 6 to 60 s. The first state
+sent after the load (message types 1 and 2) is when the player is in the round.
 
 [[admin]]
 == Admin actions

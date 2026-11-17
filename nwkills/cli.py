@@ -93,7 +93,10 @@ def run(a, log=print, progress=lambda stage, frac: None):
                 if i % 200 == 0: progress('decode', i / max(1, len(jobs)))
                 if i % 5000 == 0: log('  decoded %d / %d packets  (%.0f s)' % (i, len(jobs), time.time() - t))
         good = sum(1 for r in recs if r['tail'] and r['L'] - r['tail']['end'] < 8)
-        progress('decode', 1.0); log('%d/%d packets parsed cleanly' % (good, len(recs)))
+        queued = sum(1 for r in recs if r.get('q'))
+        progress('decode', 1.0)
+        log('%d/%d packets read to the end%s' % (good, len(recs), '; %d more were stored by the game and replayed with a later packet' % queued if queued else ''))
+        if len(recs) - good - queued > 0: log('WARNING: %d packets could not be read to the end (unknown message type?); their last messages are lost' % (len(recs) - good - queued))
         if a.cache:
             import pickle
             pickle.dump((recs, ros, flow_items), open(a.cache, 'wb'))

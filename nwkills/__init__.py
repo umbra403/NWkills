@@ -2,3 +2,4 @@
 import sys
 if sys.version_info < (3, 9):
     sys.exit('nwkills needs Python 3.9 or newer. You are running Python %d.%d. On Windows try: py -3 nwkills_gui.py' % sys.version_info[:2])
+__version__ = '0.4.0'
