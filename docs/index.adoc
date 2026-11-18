@@ -1,0 +1,19 @@
+= nwkills documentation
+:toc:
+
+The top-level link:../README.md[README] covers downloading, building, using and troubleshooting. These pages hold the details.
+
+link:window.adoc[The window]::
+The tabs of `nwkills-gui.exe`: Packets, Options, Results (sorting, filters, round chips, the Players tab, columns) and Capture.
+
+link:capturing.adoc[Capturing]::
+Recording with the built-in Capture tab (`pktmon`) or with Wireshark, what is kept, how large it gets.
+
+link:output-files.adoc[The output files]::
+Every column of the kills, players, rounds and flagbearers files, the death types, the weapon labels and the review flags.
+
+link:how-it-works.adoc[How the tool works]::
+How kills, teams, scores, rounds, names, horse charges and admin actions are worked out, and the known limits.
+
+link:packet_format_notes.md[Packet format notes]::
+Working notes on the game's network protocol: message types, field layouts, and how each was found.

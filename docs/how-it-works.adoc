@@ -1,0 +1,120 @@
+= How the tool works
+:toc:
+
+nwkills reads the packets your own game client received (UDP, unencrypted) and rebuilds the killfeed. No game files are
+needed: the packet reader is plain Python (`nwkills/nreader.py`, a table of message layouts), so nothing from the game ships
+with the tool. The bit widths of some fields differ per server and are calibrated from each capture (the
+`calibrating bit widths` step), so NW and NW Extended both work. The layouts are documented in
+link:packet_format_notes.md[the packet format notes].
+
+== Pipeline
+. Read the pcapng and find the server flow: the biggest UDP flow whose packets carry a valid length header.
+. Calibrate the per-server bit widths, then decode every packet (in parallel worker processes).
+. Rebuild the events (deaths, spawns, scores, chat lines, mount links), resolve names, decide teams and weapons.
+. Detect rounds and classify them.
+. Write the files, or hand the tables to the window.
+
+A packet whose message count reads as -1 is stored by the game and replayed with the next packet; the tool reads those too
+(their tail is ignored, as in the game). Reset blocks (the server killing every agent at a map change) that are not announced
+by an admin line are recognised and left out of the kill list. A message type nobody has seen with a rare flag set makes that
+one packet unreadable: it is skipped, not mis-read.
+
+[[names]]
+== Names
+Players are identified by slot. Slots are reused, so when a player's name later appears (repeatedly) in a different slot, the
+old slot is treated as unknown from then on and the new occupant's name is looked up from later data in the capture. Without
+this the old name would stick to whoever took the slot. Names come from the roster the server sends when you join, plus the
+join messages of players who connect later. Near-simultaneous repeats of the same death message (same victim within 6 s) are
+dropped.
+
+[[teams]]
+== Teams and teamkills
+The team of each agent is read from its spawn message, using the same test the game client makes before it prints "killed
+teammate". When the spawn message of either agent is not in the capture (agents already present at the start), the killer's
+score change decides instead (-1 means teamkill). Suicides and falls also use the score change. The review flag
+`teamkill?(score disagrees)` marks a kill where the teams say one thing and the score the other; the check is skipped when
+the score was read against a baseline from an earlier round, or when the same player made two kills within 3 s. Volleys
+(artillery, canister) get an exact verdict per kill when their spawn messages are present.
+
+[[scores]]
+== Scores
+The server sends a player's score only when it changes, and the scoreboard is reset at a round start without a packet. The
+score check therefore compares each kill with the score change in a short window around it (0.3 s before to 2.5 s after).
+
+* Scores are read only from packets that parsed to the end (the big map-change blocks give garbage values).
+* After a map change the scoreboard is zero from the start of the new round, but the capture only shows it once loading ends, which can be more than a minute later (seen: 64 s). When the score jumps to 0 (or -1 or 1) by 2 or
+  more in the first 2 minutes of a round, counting starts from that value. A player whose score was never re-sent after the
+  reset is counted from 0. An admin "Has reset the Map" can also zero scores after the round started.
+* Rounds with a jump of more than 15 inside the round (a player rejoined or a slot was reused) are skipped.
+* Several kills by one player within 2.5 s share one scoreboard change: the number of teamkills among them is taken from the
+  total change; which of them are teamkills is a guess (flagged `teamkill?(burst)`).
+* A jump of 2 or more to 0 is a reset, not a teamkill. A team swap costs 1 point. Admin slays are not point changes.
+* Artillery volleys that produce no score update count as half teamkills, because the server only sends a score when it changes.
+
+[[horses]]
+== Horse charges
+A horse can bump into a player and kill; the killfeed credits the player who rides it. The game's killfeed routine reads
+the rider from the killing horse agent, and the tool does the same:
+
+. A rider is spawned directly followed by its horse (owner none, team 0); this pairing gives the first rider.
+. A mount-link message (type 30) tells which agent rides which horse, and changes when someone mounts or dismounts.
+. The rider counts as gone when the link says no rider, the rider died after the link, or the rider respawned after it.
+. If the capture holds neither pairing nor link (the initial agent snapshot is unordered, so the first 30 s are ignored), the
+  one player whose score rises by 1 at that moment is taken (`name-from-later-data(killer-from-score)`): first within 0.5 s
+  of the kill, then within 2.5 s, if the change is not explained by one of that player's own kills and all such changes
+  belong to one player.
+. A horse nobody rides and nobody's score claims shows `(runaway horse)` with the review flag `runaway-horse`. It counts as
+  nobody's kill (the victim's death still counts). `(AI)` is shown if nothing is known.
+
+A dead rider still gets the score credit for the kill.
+
+[[rounds]]
+== Rounds
+Round borders are read straight from two server messages, with nothing inferred:
+
+. *Message type 0* is a map change (the client starts loading the new map). It arrives at the same moment as the chat line
+  "Changed the map to ...".
+. *Message type 41* is a reset of the same map. It arrives at the same moment as the chat line "Has reset the Map.", and also
+  where an admin reset has no chat line at all.
+
+The server sends each of them several times in a row with a running count in the first field (0, 1, 2 ...); the count starting
+again is the next announcement. Every announcement is a round border and `started_by` in the rounds file says which message it
+was (`map change message` or `reset message`). Nothing is merged: a map that is changed twice in a minute is two rounds, the
+first of them short.
+
+Only the *type* of a round is inferred. A round is a *warm-up* when it starts with a map change (a round goes live with a
+reset; the review flag says whether one followed), when two resets come less than 60 s apart, or when an admin says "reset and
+live" or "Live on Reset!" (also "rest/restart ... live") inside it. The team-ticket event (NWE) adds `tickets_zero_at_s` (round
+decided) and `kills_after_tickets_zero`.
+
+A capture on a server that sends neither message falls back to the team tickets, then to activity lulls and map-load signals.
+(A saved cache made by an older version has no such messages and uses the chat lines instead.)
+
+After a map change the client is busy loading, in the capture this shows as stored packets only, for 6 to 60 s. The first state
+sent after the load (message types 1 and 2) is when the player is in the round.
+
+[[admin]]
+== Admin actions
+The server prints a text line for admin actions. The tool reads three of them (`Slayed Player`, `Slayed Everyone`, `Swapped
+Everyone to Spectators`) and labels the deaths they cause; see the death types in link:output-files.adoc[the output files].
+A fist self-death with no such line is labelled `suicide (no admin line)`. Checked on 8 captures: none of 232 such rows has any
+other admin line for the victim within 15 s.
+
+== Comparing two recordings of one event
+Two recordings of the same session give the same kills for the stretch where they overlap (a test pair of 2,542 kills matched
+on 2,538 rows; the other four were in the first three seconds of the later recording). A Wireshark and a `pktmon` capture of
+the same event gave identical results. What can still differ, because one recording lacks data:
+
+* A mount or AI unit that was already alive before the later recording started: its owner is unknown there, so the row is
+  `no-blow death (mount?, not counted)` with victim `(AI/mount, owner unknown)`, where the earlier recording has `(AI)` /
+  `AI/horse death`.
+* `respawn_s` can differ by up to about 0.3 s; it is only filled when the next spawn of the same player is a spawn message.
+* Rounds that start before the later recording began are shorter there, and the last round ends at each recording's last packet.
+* Score columns come from score updates that only some packets carry, so they can differ for a few players.
+
+== Known limits
+* About 96% of kills have both names resolved; the rest are flagged in `review`.
+* Built for Warband 1.174 and NW 1.210 packets. The message layouts were worked out from the game's own reader and checked
+  against it on all captures available (about 400,000 messages, identical).
+* Weapon class 24 (`custom icon 5`) is still unidentified; the exact causes of a few non-blow death types are provisional.
+* Remaining score gaps are single samples of 1 or 2 points that could not be explained.

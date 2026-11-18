@@ -1,0 +1,34 @@
+= Capturing
+:toc:
+
+The tool reads a `.pcapng` file. Start the capture *before* you join the server, so the player list (sent when you join)
+is included.
+
+== With the Capture tab (Windows 10 1809 or later)
+The tab records with `pktmon`, the packet monitor built into Windows, so Wireshark is not needed.
+
+. Run `nwkills-gui.exe` as administrator (right-click, *Run as administrator*).
+. Open the Capture tab, or press *Capture...* at the top.
+. Press *Start capture*, then join the server and play.
+. Press *Stop and open*.
+
+While capturing, all UDP traffic of the computer is logged to a temporary file. On Stop, the game server is found
+automatically and only its packets (both directions) are saved as `capture_YYYY-MM-DD_HHMM.pcapng` in the folder you
+choose (default: `Documents\nwkills captures`). Everything else is thrown away, and the saved capture opens as if you had
+loaded it.
+
+Size:: A one-hour test event came to about 90 MB after pruning. The temporary log before pruning is larger (that event: 132 MB).
+Log size:: The temporary log is circular, 4096 MB by default (several hours of play). When it is full, the start of the
+capture is overwritten; the tab warns when it is nearly full. Raise the size in the tab for very long events.
+Closing the window:: If the window is closed during a capture, it asks whether to keep or discard it.
+
+The commands behind the tab are `pktmon filter add -t UDP` and `pktmon start --capture --comp nics --pkt-size 0 ...`, then
+`pktmon etl2pcap` on Stop. `--pkt-size 0` matters: the default would cut every packet to 128 bytes.
+
+== With Wireshark
+Capture on the network interface you play on and save as `.pcapng`. No capture filter is needed; the tool finds the game
+server itself. Both methods give the same results: on one event captured with both at once, the tool found the same server
+and produced byte-identical players, rounds and flagbearers files, and kills that differed in one 0.01 s timestamp.
+
+== Privacy
+A capture contains player names and IP addresses. The Capture tab keeps nothing but the game server's packets.

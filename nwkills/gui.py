@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFormLayout
                                QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QTableView, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
-from . import guilogic as gl
+from . import capture as cap, guilogic as gl
 
 APP = 'nwkills'
 EDIT_H = 24          # height of the filter boxes under the column labels
@@ -391,6 +391,20 @@ class LoadWorker(QThread):
         except Exception:
             self.failed.emit(traceback.format_exc())
 
+class CaptureWorker(QThread):
+    """Stop pktmon, convert its trace and keep only the game server's packets (this can take a while for a long capture)."""
+    done = Signal(str, str)
+    failed = Signal(str)
+    message = Signal(str)
+    def __init__(self, etl, final, parent=None):
+        super().__init__(parent); self.etl, self.final = etl, final
+    def run(self):
+        try:
+            kept, seen = cap.finish(self.etl, self.final, log=self.message.emit)
+            self.done.emit(self.final, 'kept %s of %s captured packets' % (format(kept, ','), format(seen, ',')))
+        except Exception as ex:
+            self.failed.emit(str(ex) or traceback.format_exc())
+
 class IndexWorker(QThread):
     """Decode the message types of every packet in the background so the display filter can search them."""
     progress = Signal(int, int)
@@ -432,7 +446,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle('nwkills'); self.resize(1280, 820); self.setAcceptDrops(True)
         self.cfg = QSettings('nwkills', 'nwkills')
-        self.path = None; self.loader = self.converter = self.indexer = None; self.tmp = None
+        self.path = None; self.loader = self.converter = self.indexer = self.capworker = None; self.tmp = None
+        self.capturing = False; self.cap_etl = self.cap_final = None; self.cap_t0 = 0.0
         self.sweep_tmp()
         self.pages = []; self.kills_page = self.players_page = self.players_orig = None
 
@@ -441,11 +456,12 @@ class MainWindow(QMainWindow):
 
         top = QHBoxLayout(); top.setContentsMargins(8, 6, 8, 6)
         b = QPushButton('Open .pcapng…'); b.clicked.connect(self.open_dialog); top.addWidget(b)
+        b = QPushButton('Capture…'); b.setToolTip('Record the game traffic with Windows\' built-in pktmon (no Wireshark needed)'); b.clicked.connect(lambda: self.tabs.setCurrentWidget(self.cap_tab)); top.addWidget(b)
         self.file_lbl = QLabel('No capture loaded. Open one, or drop a .pcapng onto this window.'); top.addWidget(self.file_lbl, 1)
         lay.addLayout(top)
 
         self.tabs = QTabWidget(); lay.addWidget(self.tabs, 1)
-        self.build_packets_tab(); self.build_options_tab(); self.build_results_tab()
+        self.build_packets_tab(); self.build_options_tab(); self.build_results_tab(); self.build_capture_tab()
         self.tabs.setTabEnabled(2, False)
 
         self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(130); self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont)); self.log.hide()
@@ -525,6 +541,75 @@ class MainWindow(QMainWindow):
         self.rtabs = QTabWidget(); lay.addWidget(self.rtabs, 1)
         self.tabs.addTab(w, 'Results')
 
+    def build_capture_tab(self):
+        w = self.cap_tab = QWidget(); lay = QVBoxLayout(w)
+        info = QLabel('Records the game traffic with <b>pktmon</b>, the packet monitor built into Windows 10 and 11, so Wireshark is not needed. '
+                      'It captures all UDP traffic on this computer while you play; when you press Stop, only the game server\'s packets are kept and everything else is thrown away. '
+                      'Start the capture <b>before</b> you join the server, so the player list is included. Needs administrator rights: right-click nwkills-gui.exe and choose "Run as administrator".')
+        info.setWordWrap(True); info.setTextFormat(Qt.RichText); lay.addWidget(info)
+        g = QGroupBox('Capture'); f = QFormLayout(g)
+        row = QHBoxLayout(); self.cap_dir = QLineEdit(); br = QPushButton('Browse…'); br.clicked.connect(self.browse_capdir); row.addWidget(self.cap_dir, 1); row.addWidget(br)
+        f.addRow('Save captures in', row)
+        self.cap_mb = QSpinBox(); self.cap_mb.setRange(512, 65536); self.cap_mb.setSingleStep(512); self.cap_mb.setValue(cap.DEFAULT_BUFFER_MB); self.cap_mb.setSuffix(' MB')
+        self.cap_mb.setToolTip('pktmon logs into a circular file of this size and overwrites the start of the capture when it is full. 4096 MB holds several hours of play. The file is deleted after conversion.')
+        f.addRow('Temporary log size', self.cap_mb)
+        lay.addWidget(g)
+        row = QHBoxLayout()
+        self.cap_start = QPushButton('Start capture'); self.cap_start.setStyleSheet('font-weight: bold; padding: 6px 22px;'); self.cap_start.clicked.connect(self.start_capture)
+        self.cap_stop = QPushButton('Stop and open'); self.cap_stop.setEnabled(False); self.cap_stop.clicked.connect(self.stop_capture)
+        row.addWidget(self.cap_start); row.addWidget(self.cap_stop); row.addStretch(1); lay.addLayout(row)
+        self.cap_state = QLabel(); self.cap_state.setWordWrap(True); lay.addWidget(self.cap_state)
+        lay.addStretch(1)
+        self.cap_timer = QTimer(self); self.cap_timer.setInterval(1000); self.cap_timer.timeout.connect(self.tick_capture)
+        self.tabs.addTab(w, 'Capture')
+        self.refresh_capture_state()
+
+    # ------------------------------------------------------------ capturing
+    def browse_capdir(self):
+        d = QFileDialog.getExistingDirectory(self, 'Save captures in', self.cap_dir.text() or os.path.expanduser('~'))
+        if d: self.cap_dir.setText(d)
+    def refresh_capture_state(self):
+        if self.capturing: return
+        err = cap.check_ready()
+        self.cap_start.setEnabled(err is None and not (self.capworker and self.capworker.isRunning()))
+        self.cap_state.setText(err or 'Ready. Press Start capture, then join the server.')
+    def start_capture(self):
+        d = self.cap_dir.text().strip() or os.path.join(os.path.expanduser('~'), 'Documents', 'nwkills captures')
+        base = os.path.join(d, cap.stamp_name())
+        try:
+            self.cap_etl, self.cap_final = base + '.etl', base + '.pcapng'
+            cap.start(self.cap_etl, self.cap_mb.value())
+        except Exception as ex:
+            QMessageBox.warning(self, APP, 'The capture could not be started:\n\n%s' % ex); self.refresh_capture_state(); return
+        self.capturing = True; self.cap_t0 = time.time(); self.cap_timer.start()
+        self.cap_start.setEnabled(False); self.cap_stop.setEnabled(True); self.cap_dir.setEnabled(False); self.cap_mb.setEnabled(False)
+        self.tick_capture(); self.statusBar().showMessage('Capturing …')
+    def tick_capture(self):
+        if not self.capturing: return
+        sec = int(time.time() - self.cap_t0)
+        try: size = os.path.getsize(self.cap_etl)
+        except OSError: size = 0
+        full = size >= 0.9 * self.cap_mb.value() * 1048576
+        self.cap_state.setText('Capturing: %d:%02d:%02d, %.0f MB of %d MB logged.%s' % (sec // 3600, sec // 60 % 60, sec % 60, size / 1048576, self.cap_mb.value(),
+                              '  <b>The log is nearly full and will start overwriting the beginning.</b>' if full else ''))
+        self.cap_state.setTextFormat(Qt.RichText)
+    def stop_capture(self):
+        if not self.capturing: return
+        self.capturing = False; self.cap_timer.stop(); self.cap_stop.setEnabled(False)
+        self.cap_state.setTextFormat(Qt.PlainText); self.cap_state.setText('Stopping and converting … (a long capture can take a minute or two)')
+        self.capworker = CaptureWorker(self.cap_etl, self.cap_final, self)
+        self.capworker.message.connect(self.add_log); self.capworker.message.connect(self.statusBar().showMessage)
+        self.capworker.done.connect(self.on_capture_done); self.capworker.failed.connect(self.on_capture_failed); self.capworker.start()
+    def end_capture_ui(self):
+        self.cap_dir.setEnabled(True); self.cap_mb.setEnabled(True); self.cap_stop.setEnabled(False)
+        self.cap_state.setTextFormat(Qt.PlainText); self.refresh_capture_state()
+    def on_capture_done(self, path, info):
+        self.end_capture_ui(); self.cap_state.setText('Saved %s (%s).' % (path, info))
+        self.statusBar().showMessage('Capture saved. Loading it …'); self.load(path)
+    def on_capture_failed(self, msg):
+        self.end_capture_ui(); self.cap_state.setText('The capture failed.'); self.add_log(msg)
+        QMessageBox.warning(self, APP, 'The capture could not be completed:\n\n' + (msg if len(msg) < 600 else msg[-600:]))
+
     # ------------------------------------------------------------ options
     def options(self):
         stem = os.path.splitext(os.path.basename(self.path or 'capture'))[0]
@@ -540,12 +625,12 @@ class MainWindow(QMainWindow):
         return self.outdir.text().strip() or (os.path.dirname(os.path.abspath(self.path)) if self.path else os.path.expanduser('~'))
     def restore_options(self):
         c = self.cfg
-        self.me.setText(c.value('me', '')); self.outdir.setText(c.value('outdir', ''))
+        self.me.setText(c.value('me', '')); self.outdir.setText(c.value('outdir', '')); self.cap_dir.setText(c.value('capdir', ''))
         self.jobs.setValue(int(c.value('jobs', self.jobs.value()))); self.cache.setChecked(c.value('cache_on', 'false') == 'true')
         self.update_cmd()
     def save_options(self):
         c = self.cfg; c.setValue('me', self.me.text()); c.setValue('outdir', self.outdir.text()); c.setValue('jobs', self.jobs.value())
-        c.setValue('cache_on', 'true' if self.cache.isChecked() else 'false')
+        c.setValue('cache_on', 'true' if self.cache.isChecked() else 'false'); c.setValue('capdir', self.cap_dir.text())
 
     # ------------------------------------------------------------ loading
     def open_dialog(self):
@@ -715,6 +800,16 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage('Wrote %d files to %s' % (len(self.pages), d))
 
     def closeEvent(self, ev):
+        if self.capturing:
+            m = QMessageBox(QMessageBox.Question, APP, 'A capture is still running.', QMessageBox.NoButton, self)
+            keep = m.addButton('Stop and keep it', QMessageBox.AcceptRole); drop = m.addButton('Discard it', QMessageBox.DestructiveRole); m.addButton('Keep capturing', QMessageBox.RejectRole)
+            m.exec()
+            if m.clickedButton() is keep:
+                self.stop_capture(); self.capworker.wait()
+            elif m.clickedButton() is drop:
+                self.capturing = False; self.cap_timer.stop(); cap.discard(self.cap_etl)
+            else: ev.ignore(); return
+        elif self.capworker and self.capworker.isRunning(): self.capworker.wait()
         self.save_options(); self.stop_index()
         if self.converter and self.converter.isRunning():
             self.converter.cancel(); self.converter.wait(5000)
@@ -768,7 +863,9 @@ def main(argv=None):
     app.setStyle('Fusion')
     win = MainWindow()
     if '--selftest' in argv:
-        win.show(); app.processEvents(); selftest(); print('gui ok'); return 0
+        win.show(); app.processEvents(); selftest()
+        assert win.cap_state.text() and win.cap_stop.isEnabled() is False and not win.capturing      # capture tab built, idle
+        print('gui ok'); return 0
     win.show()
     files = [a for a in argv if not a.startswith('-')]
     if files: QTimer.singleShot(0, lambda: win.load(files[0]))

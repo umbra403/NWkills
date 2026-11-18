@@ -120,7 +120,21 @@ def _zeros(series, zero=5):
         cur[team] = v
     return out
 
-def server_events(recs, merge=60.0, ff_delay=30.0, near=12.0):
+def boundary_messages(recs):
+    """Round boundaries exactly as the server sends them, nothing inferred: message type 0 (map change: the client starts loading) and
+    message type 41 (reset of the same map). The server sends each announcement several times in a row, and its first field counts
+    0, 1, 2 ... through them; the count starting again is the next announcement. Returns [(t, 'map' | 'reset')], or None for decodes
+    made before these messages were kept."""
+    if recs and 'bnd' not in recs[0]: return None
+    out = []; last = {}      # kind -> (count, time) of the latest message
+    for r in recs:
+        for k, c in r.get('bnd') or ():
+            p = last.get(k)
+            if p is None or c < p[0] or (c == p[0] and r['t'] - p[1] > 2.0): out.append((r['t'], k))      # the same count again within a moment is a duplicate
+            last[k] = (c, r['t'])
+    return out
+
+def server_events_from_text(recs, merge=60.0, ff_delay=30.0, near=12.0):
     """Round boundaries announced by the server itself: text lines 'Changed the map to ...' (map load) and
     'Has reset the Map.' (admin reset; also a type-41 marker). Every round start is also followed, 30 s later,
     by 'Friendly fire is now on' - so a restart done without those lines (e.g. admin 'Slayed Everyone')
@@ -191,7 +205,7 @@ def detect_server(recs, ev, series=None):
         elif kinds[i] == 'capture start': rev.append('capture start (before first map change/reset)')
         if nk < 25: rev.append('few kills (%d)' % nk)
         out.append(dict(n=i + 1, start=s0, end=e, kills=nk, kills_after_zero=kz if z else '',
-                        signals={'capture start': 'capture start', 'map': 'map change', 'reset': 'map reset (live)'}[kinds[i]],
+                        signals={'capture start': 'capture start', 'map': 'map change message', 'reset': 'reset message'}[kinds[i]],
                         kind='warm-up' if warm else ('live' if live else 'pre-live'),
                         tickets_zero=(round(z[0][0]), 'team %d' % z[0][1]) if z else None,
                         review='; '.join(rev), method='server messages'))
@@ -200,7 +214,8 @@ def detect_server(recs, ev, series=None):
 def detect(recs):
     """Returns list of round dicts: n, start, end, signals, review."""
     if recs:
-        ev = server_events(recs)
+        ev = boundary_messages(recs)
+        if ev is None: ev = server_events_from_text(recs)      # a cache from before the boundary messages were kept: chat lines instead
         if ev: return detect_server(recs, ev, _ticket_series(recs))
     if recs:
         ser = _ticket_series(recs)
