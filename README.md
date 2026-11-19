@@ -23,7 +23,7 @@ No server access, no API key, no game files and no internet connection are neede
    - with Wireshark, saving as `.pcapng`.
 2. **Read it:** open the `.pcapng` in the window (or drop it onto it) and press *Convert*, or run
    `nwkills.exe capture.pcapng`. A two-hour capture takes one to three minutes.
-3. **Look at the result.** The window shows the tables (kills, players, rounds, flagbearers) with sorting, filters and
+3. **Look at the result.** The window shows the tables (kills, multikills, players, rounds, flagbearers) with sorting, filters and
    copy/export. The window writes no files until you press an Export button. The command line writes
    `capture_kills.csv`, `capture_kills_players.csv`, `capture_rounds.csv` and `capture_flagbearers.csv` next to the capture.
 
