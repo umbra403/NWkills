@@ -781,7 +781,7 @@ class MainWindow(QMainWindow):
         self.res_info.setText('The results are held in memory only. Export saves CSV files.')
         self.tabs.setTabEnabled(2, True); self.tabs.setCurrentIndex(2)
     def add_multikills_tab(self, kill_headers):
-        """Multikills tab (between Kills and Players): artillery volleys of the kill rows the Kills tab shows right now."""
+        """Multikills tab (between Kills and Players): multikills of the kill rows the Kills tab shows right now."""
         need = {'round', 'round_kind', 'time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'review'}
         if not need <= set(kill_headers): return
         heads, rows = gl.multikills(kill_headers, [])
@@ -790,11 +790,11 @@ class MainWindow(QMainWindow):
         page.note.connect(self.statusBar().showMessage); page.jumpRequested.connect(self.show_in_packets)
         self.view_connect(page)
         self.mk_win = QDoubleSpinBox(); self.mk_win.setRange(0.1, 60.0); self.mk_win.setDecimals(1); self.mk_win.setSingleStep(0.5); self.mk_win.setValue(1.0); self.mk_win.setSuffix(' s')
-        self.mk_win.setToolTip('Kills by one player within this time of the first kill of a volley belong to that volley.')
+        self.mk_win.setToolTip('Kills by one player within this time of the first kill of a multikill belong to it.')
         self.mk_tk = QCheckBox('Include teamkills'); self.mk_tk.setChecked(True)
-        self.mk_tk.setToolTip('On: teamkills count towards a volley (the teamkills column says how many). Off: they are left out before the volleys are grouped.')
+        self.mk_tk.setToolTip('On: teamkills count towards a multikill (the teamkills column says how many). Off: they are left out before the kills are grouped.')
         self.mk_best = QCheckBox('Only each player\'s biggest'); self.mk_best.setChecked(False)
-        self.mk_best.setToolTip('Off: every volley of 2 or more. On: one row per player, the volley with the most kills.')
+        self.mk_best.setToolTip('Off: every multikill of 2 or more. On: one row per player, the biggest.')
         for i, wdg in enumerate((QLabel('Time window:'), self.mk_win, self.mk_tk, self.mk_best)): page.top.insertWidget(3 + i, wdg)
         self.mk_page = page
         self.mk_timer = QTimer(self); self.mk_timer.setSingleShot(True); self.mk_timer.setInterval(200); self.mk_timer.timeout.connect(self.refresh_multikills)
@@ -807,7 +807,7 @@ class MainWindow(QMainWindow):
         if not kp or not mp: return
         rows, any_filter, chosen = kp.scope()
         heads, out = gl.multikills(kp.headers, rows, window=self.mk_win.value(), teamkills=self.mk_tk.isChecked(), best_only=self.mk_best.isChecked(), exclude_warm=not chosen)
-        mp.scope_note = 'artillery volleys from %d of %d kill rows%s' % (len(rows), len(kp.rows), '' if chosen else ' (warm-up rounds left out; pick Warm-up to include them)')
+        mp.scope_note = 'multikills from %d of %d kill rows%s' % (len(rows), len(kp.rows), '' if chosen else ' (warm-up rounds left out; pick Warm-up to include them)')
         mp.replace_data(heads, out, sort_name='kills')
         self.rtabs.setTabText(self.rtabs.indexOf(mp), 'Multikills (%d)' % len(out))
     def refresh_players(self):
