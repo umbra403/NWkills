@@ -28,6 +28,16 @@ counted and which per-round columns appear. With no round chosen, warm-up rounds
 count negatively" box (on by default) makes kills = kills - teamkills, in the totals and per round; switched off, kills are
 kills only. Score columns come from the scoreboard data for the included rounds. Unfiltered, the table equals the CSV's totals.
 
+*Multikills is computed from the Kills tab in the same way* (same round chips and filters; warm-up rounds are left out unless you
+choose them). It looks at kills with any weapon; to look at one kind, filter the `weapon` column on the Kills tab (for example
+`artillery`, `bayonet` or `musket`). A multikill is the first kill of a player in a round plus every later kill by that player
+within the *time window* (1 s by default) of the first; the next kill starts the next one, and only groups of 2 or more are
+listed. A window of 1 s suits artillery volleys; for melee or musket fights try 5 to 15 s. "Include teamkills" (on by default)
+counts teamkills towards a multikill (the `teamkills` column says how many; off leaves them out before grouping). "Only each
+player's biggest" keeps one row per player: the multikill with the most kills, then the most enemy kills. Deaths of AI or
+horses, admin and no-blow deaths are not counted. The `review` column shows `teamkill?(burst)` when the teamkill split of a
+volley is a guess.
+
 The *Columns* drop-down stays open while you tick columns; click the button again or anywhere else to close it. In the
 Players tab it also has group boxes that show or hide several columns at once: all `kills` columns (the total and every
 round), all `deaths`, `teamkills` or `score_gap` columns, all columns of one round, all per-round columns, or all totals. A

@@ -6,7 +6,7 @@ import argparse, glob, os, shutil, sys, tempfile, time, traceback
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPoint, QSortFilterProxyModel, QThread, QTimer, Signal, QSettings
 from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QKeySequence, QAction
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget,
+                               QDoubleSpinBox, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QTableView, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
 from . import capture as cap, guilogic as gl
@@ -755,7 +755,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ results
     def show_results(self, paths):
-        self.rtabs.clear(); self.pages = []; self.kills_page = self.players_page = self.players_orig = None
+        self.rtabs.clear(); self.pages = []; self.kills_page = self.players_page = self.players_orig = self.mk_page = None
         rh, rr = gl.read_csv_table(paths['rounds']) if paths.get('rounds') and os.path.exists(paths['rounds']) else ([], [])
         round_kinds = {r[rh.index('round')]: r[rh.index('kind')] for r in rr} if rh else {}
         for key, title, chips in (('kills', 'Kills', True), ('players', 'Players', False), ('rounds', 'Rounds', False), ('flagbearers', 'Flagbearers', False)):
@@ -767,7 +767,9 @@ class MainWindow(QMainWindow):
             page.note.connect(self.statusBar().showMessage); page.jumpRequested.connect(self.show_in_packets)
             self.view_connect(page)
             self.rtabs.addTab(page, '%s (%d)' % (title, len(rows))); self.pages.append(page)
-            if key == 'kills': self.kills_page = page
+            if key == 'kills':
+                self.kills_page = page
+                self.add_multikills_tab(h)
             if key == 'players': self.players_page = page; self.players_orig = (h, rows)
         if self.kills_page and self.players_page:
             self.neg = QCheckBox('Teamkills count negatively'); self.neg.setChecked(True)
@@ -778,6 +780,36 @@ class MainWindow(QMainWindow):
             self.refresh_players()
         self.res_info.setText('The results are held in memory only. Export saves CSV files.')
         self.tabs.setTabEnabled(2, True); self.tabs.setCurrentIndex(2)
+    def add_multikills_tab(self, kill_headers):
+        """Multikills tab (between Kills and Players): multikills of the kill rows the Kills tab shows right now."""
+        need = {'round', 'round_kind', 'time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'review'}
+        if not need <= set(kill_headers): return
+        heads, rows = gl.multikills(kill_headers, [])
+        page = ResultsPage('Multikills', heads, rows)
+        page.export_dir = self.export_folder()
+        page.note.connect(self.statusBar().showMessage); page.jumpRequested.connect(self.show_in_packets)
+        self.view_connect(page)
+        self.mk_win = QDoubleSpinBox(); self.mk_win.setRange(0.1, 60.0); self.mk_win.setDecimals(1); self.mk_win.setSingleStep(0.5); self.mk_win.setValue(1.0); self.mk_win.setSuffix(' s')
+        self.mk_win.setToolTip('Kills by one player within this time of the first kill of a multikill belong to it.')
+        self.mk_tk = QCheckBox('Include teamkills'); self.mk_tk.setChecked(True)
+        self.mk_tk.setToolTip('On: teamkills count towards a multikill (the teamkills column says how many). Off: they are left out before the kills are grouped.')
+        self.mk_best = QCheckBox('Only each player\'s biggest'); self.mk_best.setChecked(False)
+        self.mk_best.setToolTip('Off: every multikill of 2 or more. On: one row per player, the biggest.')
+        for i, wdg in enumerate((QLabel('Time window:'), self.mk_win, self.mk_tk, self.mk_best)): page.top.insertWidget(3 + i, wdg)
+        self.mk_page = page
+        self.mk_timer = QTimer(self); self.mk_timer.setSingleShot(True); self.mk_timer.setInterval(200); self.mk_timer.timeout.connect(self.refresh_multikills)
+        self.kills_page.scopeChanged.connect(self.mk_timer.start)
+        self.mk_win.valueChanged.connect(self.mk_timer.start); self.mk_tk.toggled.connect(self.refresh_multikills); self.mk_best.toggled.connect(self.refresh_multikills)
+        self.rtabs.addTab(page, 'Multikills (0)'); self.pages.append(page)
+        self.refresh_multikills()
+    def refresh_multikills(self):
+        kp, mp = self.kills_page, self.mk_page
+        if not kp or not mp: return
+        rows, any_filter, chosen = kp.scope()
+        heads, out = gl.multikills(kp.headers, rows, window=self.mk_win.value(), teamkills=self.mk_tk.isChecked(), best_only=self.mk_best.isChecked(), exclude_warm=not chosen)
+        mp.scope_note = 'multikills from %d of %d kill rows%s' % (len(rows), len(kp.rows), '' if chosen else ' (warm-up rounds left out; pick Warm-up to include them)')
+        mp.replace_data(heads, out, sort_name='kills')
+        self.rtabs.setTabText(self.rtabs.indexOf(mp), 'Multikills (%d)' % len(out))
     def refresh_players(self):
         """Players tab = totals of the kill rows the Kills tab shows right now."""
         kp, pp = self.kills_page, self.players_page
@@ -841,6 +873,12 @@ def selftest():
     assert pp.proxy.rowCount() == 2 and pp.hdr.edits[0].text() == 'a'
     assert [pp.proxy.index(r, 0).data() for r in range(2)] == ['a', 'ab']      # kills, descending
     rows_, any_f, chosen = pg.scope(); assert any_f is False or True
+    # multikills: artillery volleys of the rows given
+    kh = ['round', 'round_kind', 'time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'review']
+    kr = [['1', 'live', '10.0', '0:10', 'G', 'a', 'artillery: cannonball', '', 'kill', ''], ['1', 'live', '10.0', '0:10', 'G', 'b', 'artillery: cannonball', 'yes', 'kill', ''],
+          ['1', 'live', '10.4', '0:10', 'G', 'c', 'artillery: cannonball', '', 'kill', ''], ['1', 'live', '50.0', '0:50', 'G', 'd', 'artillery: cannonball', '', 'kill', '']]
+    mh, mr = gl.multikills(kh, kr); assert len(mr) == 1 and mr[0][1] == '3' and mr[0][2] == '2' and mr[0][3] == '1', mr
+    mp = ResultsPage('Multikills', mh, mr); mp.replace_data(mh, gl.multikills(kh, kr, teamkills=False)[1], sort_name='kills'); assert mp.proxy.rowCount() == 1
     # columns drop-down: single columns and groups
     gp = ResultsPage('Players', ['player', 'kills', 'deaths', 'R1(live)_kills', 'R1(live)_deaths', 'R2(live)_kills', 'R2(live)_deaths'], [['a', '1', '1', '1', '1', '0', '0']])
     pop = gp.cols_popup; names = [l for l, _m in pop.groups]

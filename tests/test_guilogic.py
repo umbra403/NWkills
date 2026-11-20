@@ -70,6 +70,21 @@ def test_column_groups():
     assert gl.column_groups(['round', 'time_s', 'killer', 'review']) == []                          # the kills table has none
     assert gl.group_state({1, 2}, [1, 2]) == 0 and gl.group_state({1}, [1, 2]) == 1 and gl.group_state(set(), [1, 2]) == 2
 
+def test_multikills():
+    kh = ['round', 'round_kind', 'time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'review']
+    row = lambda rn, kind, t, k, v, w='artillery: cannonball', tk='', dt='kill': [rn, kind, str(t), '0:00', k, v, w, tk, dt, '']
+    rows = [row('1', 'live', 10.0, 'G', 'a'), row('1', 'live', 10.0, 'G', 'b', tk='yes'), row('1', 'live', 10.4, 'G', 'c'), row('1', 'live', 50.0, 'G', 'd'),
+            row('1', 'live', 60.0, 'H', 'e'), row('1', 'live', 60.5, 'H', 'f', w='artillery: shrapnel/canister'), row('2', 'live', 70.0, 'J', 'g'), row('2', 'live', 70.1, 'J', 'h', w='melee: sword/sabre'),
+            row('2', 'live', 80.0, 'K', 'i'), row('2', 'live', 80.0, 'K', 'j', dt='AI/horse death'), row('3', 'warm-up', 90.0, 'L', 'm'), row('3', 'warm-up', 90.0, 'L', 'n')]
+    h, r = gl.multikills(kh, rows)
+    assert [(x[0], x[1], x[2], x[3], x[5]) for x in r] == [('G', '3', '2', '1', '1'), ('H', '2', '2', '0', '1'), ('J', '2', '2', '0', '2')], r      # any weapon; warm-up left out; AI deaths and single kills do not count
+    assert r[0][9] == '0.40' and r[0][10] == 'a; b; c' and r[2][4] == 'cannonball/sword/sabre'
+    assert [(x[0], x[1]) for x in gl.multikills(kh, rows, teamkills=False)[1]] == [('G', '2'), ('H', '2'), ('J', '2')]
+    assert [x[0] for x in gl.multikills(kh, rows, window=0.3)[1]] == ['J', 'G']          # J's 0.1 s pair (2 enemies) and G's 0.0 s pair (1 enemy)
+    assert len(gl.multikills(kh, rows, exclude_warm=False)[1]) == 4
+    rows2 = rows + [row('2', 'live', 100.0, 'G', 'p'), row('2', 'live', 100.0, 'G', 'q')]
+    assert len(gl.multikills(kh, rows2)[1]) == 4 and [x[0] for x in gl.multikills(kh, rows2, best_only=True)[1]] == ['G', 'H', 'J']
+
 if __name__ == '__main__':
     for n, f in list(globals().items()):
         if n.startswith('test_'): f(); print('ok', n)

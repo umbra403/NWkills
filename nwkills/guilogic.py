@@ -213,3 +213,43 @@ def player_totals(kh, krows, ph, prows, net=True, exclude_warm=True, all_players
                      o[pidx['score_at_capture_start']] if o else '', o[pidx['score_at_capture_end']] if o else '', str(sum(gaps)) if gaps else ''] + per)
     rows.sort(key=lambda r: (-int(r[1]), r[0].lower()))
     return heads, rows
+
+def multikills(kh, krows, window=1.0, teamkills=True, best_only=False, exclude_warm=True):
+    """Multikills of the kill rows given (the rows the Kills tab shows; filter the weapon there to look at one kind). One multikill = the first kill of a
+    killer in a round plus every later kill by the same killer within `window` seconds of that first one; the next kill after it starts the next one.
+    Only groups of 2 or more are listed. Counted: ordinary kills with any weapon; AI/horse deaths, admin and no-blow deaths are not. teamkills=False leaves teamkill rows out before grouping. best_only keeps each killer's biggest volley (most kills, then most
+    enemy kills, then the earliest). exclude_warm leaves warm-up rounds out, as the Players tab does. -> (headers, rows), biggest first"""
+    ix = {h: i for i, h in enumerate(kh)}
+    R, RK, T, KI, VI, W, TKI, DT, REV = (ix[h] for h in ('round', 'round_kind', 'time_s', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'review'))
+    groups = collections.defaultdict(list)
+    for row in krows:
+        if exclude_warm and row[RK] == 'warm-up': continue
+        if row[DT] != 'kill' or row[KI] in ('?', '(AI)', '(world)', '(runaway horse)'): continue
+        if not teamkills and row[TKI] != '': continue
+        try: float(row[T])
+        except ValueError: continue
+        groups[(row[KI], row[R])].append(row)
+    out = []
+    for (killer, rn), rs in groups.items():
+        rs.sort(key=lambda r: float(r[T]))
+        i = 0
+        while i < len(rs):
+            t0 = float(rs[i][T]); j = i
+            while j + 1 < len(rs) and float(rs[j + 1][T]) - t0 <= window + 1e-9: j += 1
+            v = rs[i:j + 1]
+            if len(v) >= 2:
+                tk = sum(1 for r in v if r[TKI] != '')
+                flags = sorted({f for r in v for f in r[REV].split() if f})
+                out.append([killer, str(len(v)), str(len(v) - tk), str(tk), '/'.join(sorted({r[W].split(': ', 1)[-1] for r in v})), rn, v[0][RK], v[0][T], v[0][ix['mm:ss']],
+                            '%.2f' % (float(v[-1][T]) - t0), '; '.join(r[VI] for r in v), ' '.join(flags)])
+            i = j + 1
+    heads = ['killer', 'kills', 'enemy_kills', 'teamkills', 'weapon', 'round', 'round_kind', 'time_s', 'mm:ss', 'span_s', 'victims', 'review']
+    key = lambda r: (-int(r[1]), -int(r[2]), float(r[7]))
+    out.sort(key=key)
+    if best_only:
+        seen = set(); keep = []
+        for r in out:
+            if r[0] in seen: continue
+            seen.add(r[0]); keep.append(r)
+        out = keep
+    return heads, out
