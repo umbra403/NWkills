@@ -25,7 +25,7 @@ def main(argv=None) -> int:
         window.show()
         app.processEvents()
         run_self_test(window)
-        print('gui ok')
+        print('gui ok (self-test passed; leaving without Qt shutdown, exit code 0)')
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)          # the checks passed; leave without tearing the Qt objects down (a build machine returned 1 from that teardown)
