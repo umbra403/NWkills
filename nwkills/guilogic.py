@@ -126,17 +126,21 @@ def overall_progress(stage, frac):
     return stage, done, None
 
 # ---------------------------------------------------------------- packets
-def packet_info(pl):
-    """Decode the message list of one server->client payload for display. Needs the decoder profile to be set."""
-    from . import decoder
-    queued = len(pl) > 7 and pl[7] == 0
-    q = pl[:7] + pl[8:] if queued else pl
-    n = q[7] - 1 if len(q) > 7 else 0
-    msgs = []
-    if n > 0:
-        try: _r, _cur, msgs = decoder.msgs_only(q)
-        except Exception: msgs = []
-    return dict(queued=queued, n=n, msgs=msgs, types=type_summary([m[2] for m in msgs]))
+class PacketSummarizer:
+    """Decodes the message list of one server -> client payload for the packet list."""
+    def __init__(self, profile):
+        from .packets.message_reader import ServerMessageReader
+        self._message_reader = ServerMessageReader(profile)
+
+    def summarize(self, payload):
+        queued = len(payload) > 7 and payload[7] == 0
+        readable = payload[:7] + payload[8:] if queued else payload
+        message_count = readable[7] - 1 if len(readable) > 7 else 0
+        messages = []
+        if message_count > 0:
+            try: messages = self._message_reader.read(readable).messages
+            except Exception: messages = []
+        return dict(queued=queued, n=message_count, msgs=messages, types=type_summary([m[2] for m in messages]))
 
 def type_summary(types):
     c = collections.Counter(types)

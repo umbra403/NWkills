@@ -1,12 +1,28 @@
-import argparse, collections, csv, json, os, struct, sys, time, multiprocessing as mp
+import argparse, collections, csv, json, os, struct, sys, time
+from typing import NamedTuple, Optional
 
-def _init(prof):
-    from . import decoder
-    decoder.set_profile(prof)
+from .packets.pcapng_file import PcapngReader
+from .packets.parallel_decoding import ParallelPacketDecoder
+from .packets.profile_calibrator import ProfileCalibrator
+from .packets.server_flow import FlowKey, GameServerFlowFinder
 
-def _work(a):
-    from .decoder import one
-    return one(a)
+class ServerFlowCapture(NamedTuple):
+    key: Optional[FlowKey]
+    payloads: list              # [(timestamp, payload)] of the game server's packets, in time order
+    frame_count: int            # all frames in the file
+
+def read_server_flow(capture_path, wanted_port=None):
+    """The game server's packets in a capture (key None and no payloads when there are none)."""
+    finder = GameServerFlowFinder(wanted_port)
+    reader = PcapngReader()
+    frame_count = [0]
+    def counted_frames():
+        for frame in reader.read_frames(capture_path):
+            frame_count[0] += 1
+            yield frame
+    flow_key = finder.find_flow_key(counted_frames())
+    if flow_key is None: return ServerFlowCapture(None, [], frame_count[0])
+    return ServerFlowCapture(flow_key, finder.collect_payloads(reader.read_frames(capture_path), flow_key), frame_count[0])
 
 def death_type(e, burst=False):
     """Provisional classification (no ground truth yet for the non-blow kinds).
@@ -25,25 +41,6 @@ def death_type(e, burst=False):
         if ks is not None and ks >= 0: return 'no-blow death (mount?, not counted)'      # known killer, no blow data and no killfeed line (seen on video: horse deaths); not counted
         return 'non-blow death (leave/class change?)'
     return 'kill'
-
-def find_server_flow(pkts, want_port=None):
-    from .pcap import parse_udp
-    flows = collections.defaultdict(lambda: [0, 0, 0])      # key -> [packets, bytes, header-ok]
-    store = collections.defaultdict(list)
-    for ts, lt, raw in pkts:
-        try: u = parse_udp(lt, raw)
-        except Exception: continue
-        if not u or u[3] is None or len(u[5]) < 13: continue
-        src, dst, proto, sp, dp, pl = u
-        if want_port and sp != want_port: continue
-        key = (src, sp, dst, dp)
-        f = flows[key]; f[0] += 1; f[1] += len(pl)
-        if (pl[0] | (pl[1] << 8)) & 0x7ff == len(pl): f[2] += 1
-        store[key].append((ts, pl))
-    cands = [(k, v) for k, v in flows.items() if v[0] >= 50 and v[2] >= 0.9 * v[0]]
-    if not cands: return None, []
-    key, _ = max(cands, key=lambda kv: kv[1][1])             # biggest flow = server -> client
-    return key, sorted(store[key], key=lambda x: x[0])
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Read Mount & Blade: Warband Napoleonic Wars kills from a Wireshark capture (client side).')
@@ -64,7 +61,6 @@ class Cancelled(Exception): pass
 def run(a, log=print, progress=lambda stage, frac: None):
     """The whole pipeline. `a` needs: pcap, out, port, me, jobs, cache, limit. Returns the paths of the CSV files written.
     progress(stage, fraction 0..1 inside that stage) may raise Cancelled to stop."""
-    from .pcap import read_pcapng
     from .roster import build_roster, lookup
     from .events import decode, WCODE
     t = time.time()
@@ -73,8 +69,8 @@ def run(a, log=print, progress=lambda stage, frac: None):
         import pickle
         _c = pickle.load(open(a.cache, 'rb')); recs, ros = _c[0], _c[1]; flow_items = _c[2] if len(_c) > 2 else None; log('loaded %d decoded packets from %s' % (len(recs), a.cache))
     else:
-        progress('read', 0.0); log('reading capture ...'); ifs, pk = read_pcapng(a.pcap); progress('read', 1.0)
-        key, flow = find_server_flow(pk, a.port)
+        progress('read', 0.0); log('reading capture ...')
+        key, flow, _frame_count = read_server_flow(a.pcap, a.port); progress('read', 1.0)
         if not flow: raise RuntimeError('could not find the game server flow in the capture (try --port)')
         log('server flow %s:%d -> %s:%d, %d packets' % (key[0], key[1], key[2], key[3], len(flow)))
         if a.limit: flow = flow[:a.limit]
@@ -82,16 +78,14 @@ def run(a, log=print, progress=lambda stage, frac: None):
         flow_items = [(ts - t0, pl) for ts, pl in flow]
         ros = build_roster(flow_items)
         log('%d player names found' % sum(len(v) for v in ros.values()))
-        from . import decoder
         progress('roster', 1.0); log('calibrating bit widths for this server ...')
-        prof = decoder.calibrate([pl for ts, pl in flow[:60000]], log=log)
+        profile = ProfileCalibrator().calibrate([pl for ts, pl in flow[:60000]], log=log)
         jobs = [(k, ts - t0, pl) for k, (ts, pl) in enumerate(flow) if len(pl) > 12]
-        recs = []
-        with mp.Pool(a.jobs, initializer=_init, initargs=(prof,)) as p:
-            for i, r in enumerate(p.imap(_work, jobs, chunksize=32)):
-                recs.append(r)
-                if i % 200 == 0: progress('decode', i / max(1, len(jobs)))
-                if i % 5000 == 0: log('  decoded %d / %d packets  (%.0f s)' % (i, len(jobs), time.time() - t))
+        def report_decoding(done, total):
+            if done % 200 == 0: progress('decode', done / max(1, total))
+            if done % 5000 == 0: log('  decoded %d / %d packets  (%.0f s)' % (done, total, time.time() - t))
+        decoded_packets = ParallelPacketDecoder(profile, a.jobs, bool(os.environ.get('NWKEEP_ALL_AGENT_PROPS'))).decode_all(jobs, report_decoding)
+        recs = [packet.to_legacy_record() for packet in decoded_packets]
         good = sum(1 for r in recs if r['tail'] and r['L'] - r['tail']['end'] < 8)
         queued = sum(1 for r in recs if r.get('q'))
         progress('decode', 1.0)
@@ -132,7 +126,7 @@ def run(a, log=print, progress=lambda stage, frac: None):
             if any(x[2] == nm_ and x[0] < ros[s_][0][0] - 1 for sl_, v_ in ros.items() if sl_ != s_ for x in v_): early.add(s_)
     need |= early
     if need and flow_items is None:
-        _i, _pk = read_pcapng(a.pcap); _k, _f = find_server_flow(_pk, a.port); flow_items = [(ts - _f[0][0], pl) for ts, pl in _f]
+        _k, _f, _n = read_server_flow(a.pcap, a.port); flow_items = [(ts - _f[0][0], pl) for ts, pl in _f]
     if need and flow_items:
         from .roster import fill_roster
         fill_roster(ros, flow_items, need, since=_since, early=early)
@@ -308,4 +302,5 @@ def run(a, log=print, progress=lambda stage, frac: None):
 
 
 if __name__ == '__main__':
-    mp.freeze_support(); main()
+    import multiprocessing
+    multiprocessing.freeze_support(); main()

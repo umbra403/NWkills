@@ -9,7 +9,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFormLayout
                                QDoubleSpinBox, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QTableView, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
-from . import capture as cap, guilogic as gl
+from .capture import pktmon
+from . import guilogic as gl
 
 APP = 'nwkills'
 EDIT_H = 24          # height of the filter boxes under the column labels
@@ -59,12 +60,12 @@ class PacketModel(QAbstractTableModel):
     HEAD = ['No.', 'Time (s)', 'Length', 'Flags', 'Msgs', 'Message types']
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.items, self.info, self.times = [], {}, []
-    def set_items(self, items):
-        self.beginResetModel(); self.items, self.info = items, {}; self.times = [t for t, _ in items]; self.endResetModel()
+        self.items, self.info, self.times, self.summarizer = [], {}, [], None
+    def set_items(self, items, summarizer=None):
+        self.beginResetModel(); self.items, self.info, self.summarizer = items, {}, summarizer; self.times = [t for t, _ in items]; self.endResetModel()
     def get_info(self, r):
         i = self.info.get(r)
-        if i is None: i = self.info[r] = gl.packet_info(self.items[r][1])
+        if i is None: i = self.info[r] = self.summarizer.summarize(self.items[r][1])
         return i
     def rowCount(self, parent=QModelIndex()): return 0 if parent.isValid() else len(self.items)
     def columnCount(self, parent=QModelIndex()): return 0 if parent.isValid() else len(self.HEAD)
@@ -376,18 +377,15 @@ class LoadWorker(QThread):
         super().__init__(parent); self.path, self.port = path, port
     def run(self):
         try:
-            from .pcap import read_pcapng
-            from .cli import find_server_flow
-            from . import decoder
+            from .cli import read_server_flow
+            from .packets.profile_calibrator import ProfileCalibrator
             self.message.emit('Reading %s …' % os.path.basename(self.path))
-            _ifs, pk = read_pcapng(self.path)
-            key, flow = find_server_flow(pk, self.port)
-            if not flow: self.failed.emit('Could not find the game server flow in this capture. Try setting the server port in Options.'); return
-            t0 = flow[0][0]
+            server_flow = read_server_flow(self.path, self.port)
+            if not server_flow.payloads: self.failed.emit('Could not find the game server flow in this capture. Try setting the server port in Options.'); return
+            t0 = server_flow.payloads[0][0]
             self.message.emit('Calibrating for this server …')
-            prof = decoder.calibrate([pl for _ts, pl in flow[:60000]], log=self.message.emit)
-            decoder.set_profile(prof)
-            self.loaded.emit(dict(key=key, items=[(ts - t0, pl) for ts, pl in flow], total=len(pk), size=os.path.getsize(self.path)))
+            profile = ProfileCalibrator().calibrate([pl for _ts, pl in server_flow.payloads[:60000]], log=self.message.emit)
+            self.loaded.emit(dict(key=server_flow.key, items=[(ts - t0, pl) for ts, pl in server_flow.payloads], total=server_flow.frame_count, size=os.path.getsize(self.path), profile=profile))
         except Exception:
             self.failed.emit(traceback.format_exc())
 
@@ -400,7 +398,7 @@ class CaptureWorker(QThread):
         super().__init__(parent); self.etl, self.final = etl, final
     def run(self):
         try:
-            kept, seen = cap.finish(self.etl, self.final, log=self.message.emit)
+            kept, seen = pktmon.PktmonCapture().finish(self.etl, self.final, log=self.message.emit)
             self.done.emit(self.final, 'kept %s of %s captured packets' % (format(kept, ','), format(seen, ',')))
         except Exception as ex:
             self.failed.emit(str(ex) or traceback.format_exc())
@@ -415,7 +413,7 @@ class IndexWorker(QThread):
         for r in range(n):
             if self.stop: return
             if r not in self.model.info:
-                try: self.model.info[r] = gl.packet_info(self.model.items[r][1])
+                try: self.model.info[r] = self.model.summarizer.summarize(self.model.items[r][1])
                 except Exception: self.model.info[r] = dict(queued=False, n=0, msgs=[], types='')
             if r % 500 == 0: self.progress.emit(r, n)
         self.progress.emit(n, n)
@@ -550,7 +548,7 @@ class MainWindow(QMainWindow):
         g = QGroupBox('Capture'); f = QFormLayout(g)
         row = QHBoxLayout(); self.cap_dir = QLineEdit(); br = QPushButton('Browse…'); br.clicked.connect(self.browse_capdir); row.addWidget(self.cap_dir, 1); row.addWidget(br)
         f.addRow('Save captures in', row)
-        self.cap_mb = QSpinBox(); self.cap_mb.setRange(512, 65536); self.cap_mb.setSingleStep(512); self.cap_mb.setValue(cap.DEFAULT_BUFFER_MB); self.cap_mb.setSuffix(' MB')
+        self.cap_mb = QSpinBox(); self.cap_mb.setRange(512, 65536); self.cap_mb.setSingleStep(512); self.cap_mb.setValue(pktmon.DEFAULT_BUFFER_MB); self.cap_mb.setSuffix(' MB')
         self.cap_mb.setToolTip('pktmon logs into a circular file of this size and overwrites the start of the capture when it is full. 4096 MB holds several hours of play. The file is deleted after conversion.')
         f.addRow('Temporary log size', self.cap_mb)
         lay.addWidget(g)
@@ -570,15 +568,15 @@ class MainWindow(QMainWindow):
         if d: self.cap_dir.setText(d)
     def refresh_capture_state(self):
         if self.capturing: return
-        err = cap.check_ready()
+        err = pktmon.PktmonCapture().check_ready()
         self.cap_start.setEnabled(err is None and not (self.capworker and self.capworker.isRunning()))
         self.cap_state.setText(err or 'Ready. Press Start capture, then join the server.')
     def start_capture(self):
         d = self.cap_dir.text().strip() or os.path.join(os.path.expanduser('~'), 'Documents', 'nwkills captures')
-        base = os.path.join(d, cap.stamp_name())
+        base = os.path.join(d, pktmon.timestamped_capture_name())
         try:
             self.cap_etl, self.cap_final = base + '.etl', base + '.pcapng'
-            cap.start(self.cap_etl, self.cap_mb.value())
+            pktmon.PktmonCapture().start(self.cap_etl, self.cap_mb.value())
         except Exception as ex:
             QMessageBox.warning(self, APP, 'The capture could not be started:\n\n%s' % ex); self.refresh_capture_state(); return
         self.capturing = True; self.cap_t0 = time.time(); self.cap_timer.start()
@@ -652,7 +650,7 @@ class MainWindow(QMainWindow):
         self.loader.message.connect(self.statusBar().showMessage); self.loader.message.connect(self.add_log)
         self.loader.loaded.connect(self.on_loaded); self.loader.failed.connect(self.on_load_failed); self.loader.start()
     def on_loaded(self, d):
-        self.pmodel.set_items(d['items'])
+        self.pmodel.set_items(d['items'], gl.PacketSummarizer(d['profile']))
         k = d['key']
         self.file_lbl.setText('%s   ·   %.0f MB   ·   %s packets, %s from the server   ·   server %s:%d' % (os.path.basename(self.path), d['size'] / 1e6, format(d['total'], ','), format(len(d['items']), ','), k[0], k[1]))
         self.index_btn.setEnabled(True); self.go.setEnabled(True)
@@ -839,7 +837,7 @@ class MainWindow(QMainWindow):
             if m.clickedButton() is keep:
                 self.stop_capture(); self.capworker.wait()
             elif m.clickedButton() is drop:
-                self.capturing = False; self.cap_timer.stop(); cap.discard(self.cap_etl)
+                self.capturing = False; self.cap_timer.stop(); pktmon.PktmonCapture().discard(self.cap_etl)
             else: ev.ignore(); return
         elif self.capworker and self.capworker.isRunning(): self.capworker.wait()
         self.save_options(); self.stop_index()

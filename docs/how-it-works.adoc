@@ -2,7 +2,7 @@
 :toc:
 
 nwkills reads the packets your own game client received (UDP, unencrypted) and rebuilds the killfeed. No game files are
-needed: the packet reader is plain Python (`nwkills/nreader.py`, a table of message layouts), so nothing from the game ships
+needed: the packet reader is plain Python (the `nwkills/packets/` package; `message_layouts.py` is the table of message layouts), so nothing from the game ships
 with the tool. The bit widths of some fields differ per server and are calibrated from each capture (the
 `calibrating bit widths` step), so NW and NW Extended both work. The layouts are documented in
 link:packet_format_notes.md[the packet format notes].
