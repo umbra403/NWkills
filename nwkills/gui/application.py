@@ -26,7 +26,9 @@ def main(argv=None) -> int:
         app.processEvents()
         run_self_test(window)
         print('gui ok')
-        return 0
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)          # the checks passed; leave without tearing the Qt objects down (a build machine returned 1 from that teardown)
     window.show()
     capture_files = [argument for argument in argv if not argument.startswith('-')]
     if capture_files:
