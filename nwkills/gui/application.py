@@ -5,18 +5,9 @@ import sys
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from .process_exit import end_process_now
 from .main_window import APPLICATION_NAME, MainWindow
 from .self_test import run_self_test
-
-
-def leave_without_shutdown(exit_code: int) -> None:
-    """Ends the process at once, without Qt's shutdown (on Windows without the DLL detach step either)."""
-    if sys.platform == 'win32':
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-        kernel32.TerminateProcess(ctypes.c_void_p(kernel32.GetCurrentProcess()), exit_code)
-    os._exit(exit_code)
 
 
 def main(argv=None) -> int:
@@ -35,10 +26,8 @@ def main(argv=None) -> int:
         window.show()
         app.processEvents()
         run_self_test(window)
-        print('gui ok (self-test passed; process ended directly with exit code 0)')
-        sys.stdout.flush()
-        sys.stderr.flush()
-        leave_without_shutdown(0)
+        print('gui ok')
+        end_process_now(0)
     window.show()
     capture_files = [argument for argument in argv if not argument.startswith('-')]
     if capture_files:

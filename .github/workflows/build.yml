@@ -24,10 +24,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: python packaging/make_version_info.py --check-tag ${{ github.ref_name }}
       - name: Window self-test (builds the tables offscreen and checks sorting, filters and copy)
-        run: |
-          python -X faulthandler nwkills_gui.py --selftest
-          Write-Host "self-test exit code: $LASTEXITCODE"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: python nwkills_gui.py --selftest
       - run: pyinstaller --onefile --noupx --version-file version_cli.txt --name nwkills --add-data "nwkills/data;nwkills/data" nwkills.py
       - name: Smoke test (command line)
         run: dist\nwkills.exe --help
