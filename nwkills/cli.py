@@ -61,13 +61,14 @@ class Cancelled(Exception): pass
 def run(a, log=print, progress=lambda stage, frac: None):
     """The whole pipeline. `a` needs: pcap, out, port, me, jobs, cache, limit. Returns the paths of the CSV files written.
     progress(stage, fraction 0..1 inside that stage) may raise Cancelled to stop."""
-    from .roster import build_roster, lookup
+    from .roster import PlayerRoster, RosterFiller, UnnamedSlotFinder
     from .events import decode, WCODE
+    from .flagbearers import FlagTable, FlagbearerReport, ServerKindDetector
     t = time.time()
     cache = None; flow_items = None
     if a.cache and os.path.exists(a.cache):
         import pickle
-        _c = pickle.load(open(a.cache, 'rb')); recs, ros = _c[0], _c[1]; flow_items = _c[2] if len(_c) > 2 else None; log('loaded %d decoded packets from %s' % (len(recs), a.cache))
+        _c = pickle.load(open(a.cache, 'rb')); recs, roster = _c[0], PlayerRoster(_c[1]); flow_items = _c[2] if len(_c) > 2 else None; log('loaded %d decoded packets from %s' % (len(recs), a.cache))
     else:
         progress('read', 0.0); log('reading capture ...')
         key, flow, _frame_count = read_server_flow(a.pcap, a.port); progress('read', 1.0)
@@ -76,8 +77,8 @@ def run(a, log=print, progress=lambda stage, frac: None):
         if a.limit: flow = flow[:a.limit]
         t0 = flow[0][0]
         flow_items = [(ts - t0, pl) for ts, pl in flow]
-        ros = build_roster(flow_items)
-        log('%d player names found' % sum(len(v) for v in ros.values()))
+        roster = PlayerRoster.scan(flow_items)
+        log('%d player names found' % roster.name_count())
         progress('roster', 1.0); log('calibrating bit widths for this server ...')
         profile = ProfileCalibrator().calibrate([pl for ts, pl in flow[:60000]], log=log)
         jobs = [(k, ts - t0, pl) for k, (ts, pl) in enumerate(flow) if len(pl) > 12]
@@ -93,43 +94,25 @@ def run(a, log=print, progress=lambda stage, frac: None):
         if len(recs) - good - queued > 0: log('WARNING: %d packets could not be read to the end (unknown message type?); their last messages are lost' % (len(recs) - good - queued))
         if a.cache:
             import pickle
-            pickle.dump((recs, ros, flow_items), open(a.cache, 'wb'))
+            pickle.dump((recs, roster.sightings_by_slot, flow_items), open(a.cache, 'wb'))
     progress('events', 0.0)
-    from .roster import retire_moved, merge_joins
-    _nj = merge_joins(ros, recs)
+    _nj = roster.merge_join_records(recs)
     if _nj: log('%d more player names read from join messages' % _nj)
-    _since = retire_moved(ros)
+    unknown_since = roster.retire_moved_names()
     def namer(s, tt):
         if s is None: return '?'
         if s < 0: return '(AI)'
-        return lookup(ros, s, tt) or 'player#%d' % s
-    me = None
-    if a.me:
-        for s, v in ros.items():
-            if any(a.me.lower() in x[2].lower() for x in v): me = s
+        return roster.name_at(s, tt) or 'player#%d' % s
+    me = roster.slot_of_name_containing(a.me) if a.me else None
     here = os.path.dirname(os.path.abspath(__file__))
     items = json.load(open(os.path.join(here, 'data', 'items.json')))
     ev, ls = decode(recs, None, me, items, namer)
-    need = set(e[r + '_slot'] for e in ev for r in ('killer', 'victim') if e[r + '_slot'] is not None and e[r + '_slot'] >= 0 and not lookup(ros, e[r + '_slot'], e['time']))
-    # a slot whose first known name only shows up after an event that used the slot, and that name held ANOTHER slot earlier (the player rejoined into this
-    # slot): the earlier occupant of this slot is unknown, not that name
-    _first = {}
-    for sl_, v_ in ros.items():
-        for x_ in v_:
-            if x_[2] and (x_[2] not in _first or x_[0] < _first[x_[2]][0]): _first[x_[2]] = (x_[0], sl_)
-    early = set()
-    for e in ev:
-        for r in ('killer', 'victim'):
-            s_ = e[r + '_slot']
-            if s_ is None or s_ < 0 or not ros.get(s_) or not ros[s_][0][2] or ros[s_][0][0] <= e['time'] + 5: continue
-            nm_ = ros[s_][0][2]
-            if any(x[2] == nm_ and x[0] < ros[s_][0][0] - 1 for sl_, v_ in ros.items() if sl_ != s_ for x in v_): early.add(s_)
+    need, early = UnnamedSlotFinder(roster).find(ev)
     need |= early
     if need and flow_items is None:
         _k, _f, _n = read_server_flow(a.pcap, a.port); flow_items = [(ts - _f[0][0], pl) for ts, pl in _f]
     if need and flow_items:
-        from .roster import fill_roster
-        fill_roster(ros, flow_items, need, since=_since, early=early)
+        RosterFiller().fill(roster, flow_items, need, unknown_since, early)
         ev, ls = decode(recs, None, me, items, namer)
     for e in ev:
         if e['killer_agent'] is not None and e['killer_agent'] < 0: e['killer'] = '(world)'
@@ -149,15 +132,13 @@ def run(a, log=print, progress=lambda stage, frac: None):
         nrows = collections.Counter(round_of(rounds, e['time']) for e in ev)
         for r in rounds: w.writerow([r['n'], round(r['start']), round(r['end']), round(r['end'] - r['start']), r['signals'], r['tickets_zero'][0] if r['tickets_zero'] else '', r['tickets_zero'][1] if r['tickets_zero'] else '', r.get('kills_after_zero', ''), r.get('kind', ''), nrows.get(r['n'], 0), r['method'], r['review']])
     # --- flagbearers (separate file): who spawned carrying a flag, per round
-    from . import flags
     fb_path = os.path.splitext(out)[0].replace('_kills', '') + '_flagbearers.csv'
-    kind = flags.server_kind(recs)
-    ftab = flags.load_table(here, kind)
-    if ftab:
-        fb = flags.flagbearers(recs, ftab, rounds, round_of, rkind, namer)
+    flag_table = FlagTable.load(os.path.join(here, 'data'), ServerKindDetector().detect(recs))
+    if flag_table:
+        fb = FlagbearerReport(flag_table, rounds, round_of, rkind, namer).build(recs)
         with open(fb_path, 'w', newline='', encoding='utf-8-sig') as f:
             w = csv.writer(f); w.writerow(['round', 'round_kind', 'player', 'player_slot', 'class', 'flag', 'spawns', 'first_spawn_s', 'first_spawn_mm:ss', 'last_spawn_s', 'review'])
-            for r in fb: w.writerow(r[:7] + [r[7], '%d:%02d' % divmod(int(r[7]), 60), r[8], r[9]])
+            for r in fb: w.writerow(list(r[:7]) + [r[7], '%d:%02d' % divmod(int(r[7]), 60), r[8], r[9]])
         log('%d flagbearer rows -> %s' % (len(fb), fb_path))
     else:
         log('flagbearers: skipped (no troop/item table for this server type)')
@@ -268,13 +249,13 @@ def run(a, log=print, progress=lambda stage, frac: None):
                 if inr[0] - s0_ != n1 and inr[0] == n1: s0_ = 0
             vals = [s0_] + inr
             if any(abs(b_ - a_) > 15 for a_, b_ in zip(vals, vals[1:])): continue      # score reset inside the round, or a jump no kills can explain (slot reused / player rejoined)
-            nm = lookup(ros, slot, tb)
+            nm = roster.name_at(slot, tb)
             if not nm: continue
-            if any(tb + 5 < x[0] < r['end'] and x[2] != nm for x in ros.get(slot, [])): continue      # the slot changed hands inside this round: its score and events belong to two players
+            if any(tb + 5 < x[0] < r['end'] and x[2] != nm for x in roster.sightings(slot)): continue      # the slot changed hands inside this round: its score and events belong to two players
             net = sum(d for t_, d in byslot[slot] if tb + (0.1 if r['start'] == 0 else 0) < t_ < r['end'])      # capture start: the first score we see already contains the kills of that same moment
             gap[(nm, r['n'])] += (vals[-1] - s0_) - net; gapn[(nm, r['n'])] += 1
             if os.environ.get('NWKEEP_GAPDEBUG') and (vals[-1] - s0_) - net: print('GAP', nm, 'R%d' % r['n'], 'slot', slot, 'start', s0_, 'end', vals[-1], 'net', net, 'gap', (vals[-1] - s0_) - net, 'events', [(round(t_, 1), d) for t_, d in sorted(byslot[slot]) if tb < t_ < r['end']])
-        nm = lookup(ros, slot, ser[0][0])
+        nm = roster.name_at(slot, ser[0][0])
         if nm: sc0[nm] = ser[0][1]; sc1[nm] = ser[-1][1]
     kinds = {r['n']: r.get('kind', '') for r in rounds}
     cols = []

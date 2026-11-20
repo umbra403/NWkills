@@ -93,3 +93,32 @@ def ethernet_udp_frame(source: str, source_port: int, destination: str, destinat
     udp = struct.pack('>HHHH', source_port, destination_port, 8 + len(payload), 0) + payload
     ip = struct.pack('>BBHHHBBH4s4s', 0x45, 0, 20 + len(udp), 0, 0, 64, 17, 0, bytes(map(int, source.split('.'))), bytes(map(int, destination.split('.')))) + udp
     return b'\0' * 12 + b'\x08\x00' + ip
+
+
+def join_record(player_id: int, name: str, padding: int = 12) -> bytes:
+    """The bytes of a player join record as the scanner looks for them: 0x06, player id, length, 0, the name."""
+    return b'\x11' * padding + b'\x06' + bytes([player_id, len(name), 0]) + name.encode() + b'\x11' * padding
+
+
+def name_record(player_id: int, name: str, padding: int = 12) -> bytes:
+    """A player id, a name length and the name, without the message type byte (as in chat lines)."""
+    return b'\x11' * padding + bytes([player_id, len(name), 0]) + name.encode() + b'\x11' * padding
+
+
+def packet_record(time_s: float, messages=(), agents=(), players=(), joins=(), links=(), texts=(), has_state_block=True) -> dict:
+    """A decoded packet in the dictionary form of PacketDecoder.to_legacy_record. `messages` are (type, fields) with fields after the peer field."""
+    kept = [(message_type, [0] + list(fields), [4] + [8] * (len(fields) - 1) + [9 if message_type == 13 else 8]) for message_type, fields in messages]
+    state_block = dict(time=0, agents=list(agents), players=list(players), end=100) if has_state_block else None
+    return dict(i=0, t=time_s, L=104, n=len(kept), msgs=kept, joins=list(joins), links=list(links), ev=[], txt=list(texts), rst=0, bnd=[],
+                tail=state_block, err=None, q=False)
+
+
+def death_message(victim: int, killer: int, weapon_class: int = 12, mode: int = 2, hit: int = 5):
+    """A death message: victim and killer are agent numbers (the message holds agent + 1)."""
+    return (13, [victim + 1, killer + 1, weapon_class, mode, hit])
+
+
+def spawn_message(agent: int, owner_slot: int, team: int = 1, troop: int = 3, items=()):
+    """An agent spawn: fields after the peer are agent+1, owner+1, troop+1, team, 2 unused, the 11 loadout item ids (+1), then 5 unused."""
+    loadout = [item + 1 for item in items] + [0] * (11 - len(items))
+    return (5, [agent + 1, owner_slot + 1, troop + 1, team, 0, 0] + loadout + [0] * 5)
