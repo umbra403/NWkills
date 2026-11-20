@@ -1,6 +1,7 @@
 """Which player slots appear in the kill events without a (correct) name, so the roster filler knows where to look."""
 from typing import Iterable, Set, Tuple
 
+from ..events.kill_event import KillEvent
 from .player_roster import PlayerRoster
 
 
@@ -11,15 +12,15 @@ class UnnamedSlotFinder:
     def __init__(self, roster: PlayerRoster):
         self._roster = roster
 
-    def find(self, kill_events: Iterable[dict]) -> Tuple[Set[int], Set[int]]:
+    def find(self, kill_events: Iterable[KillEvent]) -> Tuple[Set[int], Set[int]]:
         """-> (slots without a name at the time of an event, slots whose first known name is provably a later occupant of the slot).
-        `kill_events` are the dictionaries of the kill decoder (keys time, killer_slot, victim_slot)."""
+        `kill_events` are the events of the kill decoder."""
         kill_events = list(kill_events)
         unnamed = set()
         for event in kill_events:
             for role in ('killer', 'victim'):
-                slot = event[role + '_slot']
-                if slot is not None and slot >= 0 and not self._roster.name_at(slot, event['time']):
+                slot = getattr(event, role + '_slot')
+                if slot is not None and slot >= 0 and not self._roster.name_at(slot, event.time_s):
                     unnamed.add(slot)
         return unnamed, self._slots_with_earlier_unknown_occupant(kill_events)
 
@@ -29,11 +30,11 @@ class UnnamedSlotFinder:
         slots = set()
         for event in kill_events:
             for role in ('killer', 'victim'):
-                slot = event[role + '_slot']
+                slot = getattr(event, role + '_slot')
                 if slot is None or slot < 0:
                     continue
                 sightings = self._roster.sightings(slot)
-                if not sightings or not sightings[0].name or sightings[0].first_seen_s <= event['time'] + self.FIRST_NAME_LATE_TOLERANCE_S:
+                if not sightings or not sightings[0].name or sightings[0].first_seen_s <= event.time_s + self.FIRST_NAME_LATE_TOLERANCE_S:
                     continue
                 first = sightings[0]
                 if any(other.name == first.name and other.first_seen_s < first.first_seen_s - self.EARLIER_HOLDER_MARGIN_S

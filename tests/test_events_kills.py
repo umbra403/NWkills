@@ -1,6 +1,5 @@
 import unittest
 import support
-from nwkills.events import decode, admin_lines
 from nwkills.events.charge_kills import ChargeKillClaimer
 from nwkills.events.evidence import AgentTime, OwnerSighting, PacketEvidence, ProjectileShot, RawDeath
 from nwkills.events.kill_builder import KillEventBuilder
@@ -23,20 +22,6 @@ def kill_event(time_s=10.0, killer_slot=1, victim_slot=2, **changes):
                   respawn_delay_s=None, weapon_class=12, extra_field_count=0)
     values.update(changes)
     return KillEvent(**values)
-
-
-class KillEventTest(unittest.TestCase):
-    def test_the_legacy_dictionary_has_the_keys_later_stages_read(self):
-        legacy = kill_event().to_legacy_dict()
-        for key in ('time', 'killer', 'victim', 'weapon', 'teamkill', 'tk_team', 'killer_slot', 'victim_slot', 'killer_agent', 'victim_agent', 'hit', 'dl',
-                    'dl_base_t', 'mode', 'respawn', 'wcode', 'nextra', 'late', 'horse', 'via_link', 'link_none'):
-            self.assertIn(key, legacy)
-        for key in ('in_group', 'burst', 'runaway', 'tk_check'):
-            self.assertNotIn(key, legacy)
-
-    def test_optional_keys_appear_once_set(self):
-        legacy = kill_event(in_volley=True, burst_guess=False, runaway_horse=True, score_contradicts_team=False).to_legacy_dict()
-        self.assertEqual((legacy['in_group'], legacy['burst'], legacy['runaway'], legacy['tk_check']), (True, False, True, False))
 
 
 class KillEventBuilderTest(unittest.TestCase):
@@ -282,17 +267,6 @@ class KillDecoderTest(unittest.TestCase):
 
     def test_the_given_local_slot_is_returned(self):
         self.assertEqual(self.decode(local_slot=7)[1], 7)
-
-    def test_the_decode_function_returns_dictionaries(self):
-        events, _local_slot = decode(self.records(), None, None, None, namer)
-        self.assertEqual((events[0]['killer'], events[0]['victim'], events[0]['wcode']), ('P1', 'P2', 5))
-
-    def test_the_decode_function_names_slots_with_a_roster_dictionary_by_default(self):
-        events, _local_slot = decode(self.records(), {1: 'Ann', 2: 'Bob'})
-        self.assertEqual((events[0]['killer'], events[0]['victim']), ('Ann', 'Bob'))
-
-    def test_admin_lines_lists_admin_actions(self):
-        self.assertEqual(admin_lines([support.packet_record(5.0, texts=['Boss Slayed Everyone.'])])[0].kind, 'slay_all')
 
 
 if __name__ == '__main__':

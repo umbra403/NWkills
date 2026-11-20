@@ -1,6 +1,7 @@
 import unittest
 import support
 from nwkills.roster import JoinRecordScanner, NameSighting, PlayerNameHeuristics, PlayerRoster, RosterFiller, UnnamedSlotFinder
+from test_events_kills import kill_event
 from nwkills.roster.bit_shifting import is_printable_ascii, shift_right
 
 
@@ -158,17 +159,17 @@ class RosterFillerTest(unittest.TestCase):
 class UnnamedSlotFinderTest(unittest.TestCase):
     def test_slots_without_a_name_at_the_event_are_found(self):
         roster = PlayerRoster({1: [NameSighting(0.0, 9.0, 'Known', 3)]})
-        events = [dict(time=5.0, killer_slot=1, victim_slot=2), dict(time=6.0, killer_slot=-1, victim_slot=None)]
+        events = [kill_event(5.0, killer_slot=1, victim_slot=2), kill_event(6.0, killer_slot=-1, victim_slot=None)]
         self.assertEqual(UnnamedSlotFinder(roster).find(events), ({2}, set()))
 
     def test_a_slot_whose_first_name_comes_late_and_held_another_slot_before_is_flagged(self):
         roster = PlayerRoster({1: [NameSighting(500.0, 600.0, 'Napoleon', 3)], 2: [NameSighting(0.0, 100.0, 'Napoleon', 3)]})
-        unnamed, earlier = UnnamedSlotFinder(roster).find([dict(time=10.0, killer_slot=1, victim_slot=None)])
+        unnamed, earlier = UnnamedSlotFinder(roster).find([kill_event(10.0, killer_slot=1, victim_slot=None)])
         self.assertEqual(earlier, {1})
 
     def test_a_first_name_that_is_not_late_is_not_flagged(self):
         roster = PlayerRoster({1: [NameSighting(8.0, 600.0, 'Napoleon', 3)], 2: [NameSighting(0.0, 100.0, 'Napoleon', 3)]})
-        self.assertEqual(UnnamedSlotFinder(roster).find([dict(time=10.0, killer_slot=1, victim_slot=None)])[1], set())
+        self.assertEqual(UnnamedSlotFinder(roster).find([kill_event(10.0, killer_slot=1, victim_slot=None)])[1], set())
 
 
 if __name__ == '__main__':

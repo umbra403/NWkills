@@ -3,11 +3,11 @@ import os
 import tempfile
 import unittest
 import support
+from nwkills.rounds import Round, RoundTimeline
 from nwkills.flagbearers import FlagTable, FlagbearerReport, ServerKindDetector, SpawnExtractor
 
 TABLE = FlagTable(dict(troops={'3': dict(name='trp_nco', flags=[40])}, items={'40': 'itm_flag_france'}))
-ROUND_OF = lambda rounds, time_s: 1 if time_s < 100 else 2
-KIND_OF = lambda rounds, time_s: 'live'
+TIMELINE = RoundTimeline([Round(1, 0.0, 100.0, 0, '', '', kind='live'), Round(2, 100.0, 1000.0, 0, '', '', kind='live')])
 NAMER = lambda slot, time_s: 'P%d' % slot if slot != 9 else '?'
 
 
@@ -62,7 +62,7 @@ class SpawnExtractorTest(unittest.TestCase):
 
 class FlagbearerReportTest(unittest.TestCase):
     def build(self, records, table=TABLE):
-        return FlagbearerReport(table, [], ROUND_OF, KIND_OF, NAMER).build(records)
+        return FlagbearerReport(table, TIMELINE, NAMER).build(records)
 
     def test_a_troop_that_can_carry_a_flag_with_the_flag_in_its_loadout_is_a_flagbearer(self):
         [row] = self.build([spawn_record(5.0)])

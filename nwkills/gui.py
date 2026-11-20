@@ -377,10 +377,10 @@ class LoadWorker(QThread):
         super().__init__(parent); self.path, self.port = path, port
     def run(self):
         try:
-            from .cli import read_server_flow
+            from .pipeline import ServerFlowReader
             from .packets.profile_calibrator import ProfileCalibrator
             self.message.emit('Reading %s …' % os.path.basename(self.path))
-            server_flow = read_server_flow(self.path, self.port)
+            server_flow = ServerFlowReader().read(self.path, self.port)
             if not server_flow.payloads: self.failed.emit('Could not find the game server flow in this capture. Try setting the server port in Options.'); return
             t0 = server_flow.payloads[0][0]
             self.message.emit('Calibrating for this server …')

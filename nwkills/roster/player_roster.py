@@ -100,3 +100,17 @@ class PlayerRoster:
                         self._sightings_by_slot[old_slot] = sorted(self._sightings_by_slot[old_slot] + [NameSighting(first_2, first_2, '', 0)])
                     unknown_since[old_slot] = min(unknown_since.get(old_slot, 1e18), first_2)
         return unknown_since
+
+
+class SlotNamer:
+    """The name shown for a slot at a moment: '?' when no slot is known, '(AI)' for agents of no player, the roster's name, or player#N."""
+
+    def __init__(self, roster: PlayerRoster):
+        self._roster = roster
+
+    def __call__(self, slot: Optional[int], time_s: float) -> str:
+        if slot is None:
+            return '?'
+        if slot < 0:
+            return '(AI)'
+        return self._roster.name_at(slot, time_s) or 'player#%d' % slot

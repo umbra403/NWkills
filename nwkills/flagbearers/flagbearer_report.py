@@ -8,6 +8,8 @@ the module files for armour), which is why the troop is required as well."""
 import collections
 from typing import Callable, Iterable, List, NamedTuple, Optional
 
+from ..rounds import RoundTimeline
+
 from .flag_table import FlagTable
 from .spawn_extractor import SpawnExtractor
 
@@ -28,12 +30,9 @@ class FlagbearerRow(NamedTuple):
 
 
 class FlagbearerReport:
-    def __init__(self, table: FlagTable, rounds, round_of: Callable, kind_of: Callable, namer: Callable[[int, float], str],
-                 spawn_extractor: Optional[SpawnExtractor] = None):
+    def __init__(self, table: FlagTable, timeline: RoundTimeline, namer: Callable[[int, float], str], spawn_extractor: Optional[SpawnExtractor] = None):
         self._table = table
-        self._rounds = rounds
-        self._round_of = round_of
-        self._kind_of = kind_of
+        self._timeline = timeline
         self._namer = namer
         self._spawn_extractor = spawn_extractor or SpawnExtractor()
 
@@ -47,7 +46,7 @@ class FlagbearerReport:
             carried_flags = [item for item in spawn.item_indexes if item in troop['flags']]
             if not carried_flags and not self._table.every_spawn_counts:
                 continue
-            round_number = self._round_of(self._rounds, spawn.time_s)
+            round_number = self._timeline.number_at(spawn.time_s)
             key = (round_number, spawn.owner_slot, troop['name'], self._table.items[str(carried_flags[0])] if carried_flags else UNKNOWN_FLAG)
             total = totals.setdefault(key, [0, spawn.time_s, spawn.time_s])
             total[0] += 1
@@ -55,7 +54,7 @@ class FlagbearerReport:
         rows = []
         for (round_number, owner_slot, troop_name, flag), (spawn_count, first_s, last_s) in totals.items():
             name = self._namer(owner_slot, first_s)
-            rows.append(FlagbearerRow(round_number, self._kind_of(self._rounds, first_s), name, owner_slot, troop_name.replace('trp_', ''),
+            rows.append(FlagbearerRow(round_number, self._timeline.kind_at(first_s), name, owner_slot, troop_name.replace('trp_', ''),
                                       flag.replace('itm_', ''), spawn_count, round(first_s, 1), round(last_s, 1),
                                       'name?' if name.startswith(('?', 'player#')) else ''))
         rows.sort(key=lambda row: (row.round_number, row.player.lower(), row.first_spawn_s))
