@@ -9,6 +9,16 @@ from .main_window import APPLICATION_NAME, MainWindow
 from .self_test import run_self_test
 
 
+def leave_without_shutdown(exit_code: int) -> None:
+    """Ends the process at once, without Qt's shutdown (on Windows without the DLL detach step either)."""
+    if sys.platform == 'win32':
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.TerminateProcess(ctypes.c_void_p(kernel32.GetCurrentProcess()), exit_code)
+    os._exit(exit_code)
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if sys.stdout is None:
@@ -25,10 +35,10 @@ def main(argv=None) -> int:
         window.show()
         app.processEvents()
         run_self_test(window)
-        print('gui ok (self-test passed; leaving without Qt shutdown, exit code 0)')
+        print('gui ok (self-test passed; process ended directly with exit code 0)')
         sys.stdout.flush()
         sys.stderr.flush()
-        os._exit(0)          # the checks passed; leave without tearing the Qt objects down (a build machine returned 1 from that teardown)
+        leave_without_shutdown(0)
     window.show()
     capture_files = [argument for argument in argv if not argument.startswith('-')]
     if capture_files:
