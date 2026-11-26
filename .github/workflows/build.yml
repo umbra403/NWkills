@@ -15,11 +15,7 @@ jobs:
         with: { python-version: '3.12' }
       - run: pip install pyinstaller pyside6 pytest
       - name: Unit tests
-        run: |
-          python tests/test_guilogic.py
-          python tests/test_capture.py
-          python tests/test_repo.py
-          python tests/test_rounds.py
+        run: python -m pytest tests -q
       - name: Version resources (one version number, one product name, for every build)
         run: |
           python packaging/make_version_info.py version_cli.txt --exe nwkills

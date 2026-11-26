@@ -1,311 +1,46 @@
-import argparse, collections, csv, json, os, struct, sys, time, multiprocessing as mp
+"""The command line: nwkills <capture.pcapng> [options]."""
+import argparse
+import os
+import sys
 
-def _init(prof):
-    from . import decoder
-    decoder.set_profile(prof)
+from .pipeline import Cancelled, KillReportPipeline, PipelineOptions
 
-def _work(a):
-    from .decoder import one
-    return one(a)
 
-def death_type(e, burst=False):
-    """Provisional classification (no ground truth yet for the non-blow kinds).
-    Test capture with chat markers: fall = self + class 0, suicide = self + class 2, team swap = killer-less + class 0 (a player leaving the server looks the same)."""
-    vs, ks = e['victim_slot'], e['killer_slot']
-    if vs is not None and vs < 0: return 'AI/horse death'
-    if e['killer_agent'] is not None and e['killer_agent'] < 0:
-        return 'world (team swap / left server)'
-    if ks is not None and ks == vs:
-        if e['weapon'].startswith('headshot'): return 'self-inflicted: fall'                       # confirmed by chat markers in a test capture
-        if e['weapon'].startswith('fists'): return 'self-inflicted: suicide (no admin line)'    # slay and suicide share the packets and the killfeed icon
-        if e['weapon']=='drowning': return 'self-inflicted: drowning'                        # confirmed on video (own drowning, capture 2026-11-11)
-        return 'self-inflicted (other)'
-    if e.get('horse'): return 'horse death (player-owned mount)'     # victim agent is the player's horse (no rider properties); not a player death, no score
-    if e.get('mode') != 2:
-        if ks is not None and ks >= 0: return 'no-blow death (mount?, not counted)'      # known killer, no blow data and no killfeed line (seen on video: horse deaths); not counted
-        return 'non-blow death (leave/class change?)'
-    return 'kill'
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description='Read Mount & Blade: Warband Napoleonic Wars kills from a Wireshark capture (client side).')
+    parser.add_argument('pcap', nargs='?', help='.pcapng captured while you were connected to the server')
+    parser.add_argument('--out', help='output CSV (default: <pcap>_kills.csv)')
+    parser.add_argument('--port', type=int, help='server UDP port (default: auto-detect)')
+    parser.add_argument('--me', help='part of your own player name (used as the local player)')
+    parser.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2)))
+    parser.add_argument('--cache', help='pickle file to save/reuse decoded packets (re-run the kill logic without re-decoding)')
+    parser.add_argument('--limit', type=int, help='only decode the first N packets (test)')
+    return parser
 
-def find_server_flow(pkts, want_port=None):
-    from .pcap import parse_udp
-    flows = collections.defaultdict(lambda: [0, 0, 0])      # key -> [packets, bytes, header-ok]
-    store = collections.defaultdict(list)
-    for ts, lt, raw in pkts:
-        try: u = parse_udp(lt, raw)
-        except Exception: continue
-        if not u or u[3] is None or len(u[5]) < 13: continue
-        src, dst, proto, sp, dp, pl = u
-        if want_port and sp != want_port: continue
-        key = (src, sp, dst, dp)
-        f = flows[key]; f[0] += 1; f[1] += len(pl)
-        if (pl[0] | (pl[1] << 8)) & 0x7ff == len(pl): f[2] += 1
-        store[key].append((ts, pl))
-    cands = [(k, v) for k, v in flows.items() if v[0] >= 50 and v[2] >= 0.9 * v[0]]
-    if not cands: return None, []
-    key, _ = max(cands, key=lambda kv: kv[1][1])             # biggest flow = server -> client
-    return key, sorted(store[key], key=lambda x: x[0])
+
+def options_from_arguments(arguments) -> PipelineOptions:
+    """`arguments` needs: pcap, out, port, me, jobs, cache, limit (an argparse namespace, or the window's equivalent)."""
+    return PipelineOptions(capture_path=arguments.pcap, kills_path=arguments.out, server_port=arguments.port, own_name_part=arguments.me,
+                           process_count=arguments.jobs, cache_path=arguments.cache, packet_limit=arguments.limit)
+
+
+def run(arguments, log=print, progress=lambda stage, fraction: None):
+    """The whole pipeline. Returns the paths of the CSV files written. progress(stage, fraction 0..1 inside that stage) may raise Cancelled to stop."""
+    return KillReportPipeline().run(options_from_arguments(arguments), log, progress)
+
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description='Read Mount & Blade: Warband Napoleonic Wars kills from a Wireshark capture (client side).')
-    ap.add_argument('pcap', nargs='?', help='.pcapng captured while you were connected to the server')
-    ap.add_argument('--out', help='output CSV (default: <pcap>_kills.csv)')
-    ap.add_argument('--port', type=int, help='server UDP port (default: auto-detect)')
-    ap.add_argument('--me', help='part of your own player name (used as the local player)')
-    ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2)))
-    ap.add_argument('--cache', help='pickle file to save/reuse decoded packets (re-run the kill logic without re-decoding)')
-    ap.add_argument('--limit', type=int, help='only decode the first N packets (test)')
-    a = ap.parse_args(argv)
-    if not a.pcap: ap.error('give the .pcapng capture to read (or drag it onto nwkills.exe)')
-    try: run(a)
-    except RuntimeError as ex: sys.exit(str(ex))
-
-class Cancelled(Exception): pass
-
-def run(a, log=print, progress=lambda stage, frac: None):
-    """The whole pipeline. `a` needs: pcap, out, port, me, jobs, cache, limit. Returns the paths of the CSV files written.
-    progress(stage, fraction 0..1 inside that stage) may raise Cancelled to stop."""
-    from .pcap import read_pcapng
-    from .roster import build_roster, lookup
-    from .events import decode, WCODE
-    t = time.time()
-    cache = None; flow_items = None
-    if a.cache and os.path.exists(a.cache):
-        import pickle
-        _c = pickle.load(open(a.cache, 'rb')); recs, ros = _c[0], _c[1]; flow_items = _c[2] if len(_c) > 2 else None; log('loaded %d decoded packets from %s' % (len(recs), a.cache))
-    else:
-        progress('read', 0.0); log('reading capture ...'); ifs, pk = read_pcapng(a.pcap); progress('read', 1.0)
-        key, flow = find_server_flow(pk, a.port)
-        if not flow: raise RuntimeError('could not find the game server flow in the capture (try --port)')
-        log('server flow %s:%d -> %s:%d, %d packets' % (key[0], key[1], key[2], key[3], len(flow)))
-        if a.limit: flow = flow[:a.limit]
-        t0 = flow[0][0]
-        flow_items = [(ts - t0, pl) for ts, pl in flow]
-        ros = build_roster(flow_items)
-        log('%d player names found' % sum(len(v) for v in ros.values()))
-        from . import decoder
-        progress('roster', 1.0); log('calibrating bit widths for this server ...')
-        prof = decoder.calibrate([pl for ts, pl in flow[:60000]], log=log)
-        jobs = [(k, ts - t0, pl) for k, (ts, pl) in enumerate(flow) if len(pl) > 12]
-        recs = []
-        with mp.Pool(a.jobs, initializer=_init, initargs=(prof,)) as p:
-            for i, r in enumerate(p.imap(_work, jobs, chunksize=32)):
-                recs.append(r)
-                if i % 200 == 0: progress('decode', i / max(1, len(jobs)))
-                if i % 5000 == 0: log('  decoded %d / %d packets  (%.0f s)' % (i, len(jobs), time.time() - t))
-        good = sum(1 for r in recs if r['tail'] and r['L'] - r['tail']['end'] < 8)
-        queued = sum(1 for r in recs if r.get('q'))
-        progress('decode', 1.0)
-        log('%d/%d packets read to the end%s' % (good, len(recs), '; %d more were stored by the game and replayed with a later packet' % queued if queued else ''))
-        if len(recs) - good - queued > 0: log('WARNING: %d packets could not be read to the end (unknown message type?); their last messages are lost' % (len(recs) - good - queued))
-        if a.cache:
-            import pickle
-            pickle.dump((recs, ros, flow_items), open(a.cache, 'wb'))
-    progress('events', 0.0)
-    from .roster import retire_moved, merge_joins
-    _nj = merge_joins(ros, recs)
-    if _nj: log('%d more player names read from join messages' % _nj)
-    _since = retire_moved(ros)
-    def namer(s, tt):
-        if s is None: return '?'
-        if s < 0: return '(AI)'
-        return lookup(ros, s, tt) or 'player#%d' % s
-    me = None
-    if a.me:
-        for s, v in ros.items():
-            if any(a.me.lower() in x[2].lower() for x in v): me = s
-    here = os.path.dirname(os.path.abspath(__file__))
-    items = json.load(open(os.path.join(here, 'data', 'items.json')))
-    ev, ls = decode(recs, None, me, items, namer)
-    need = set(e[r + '_slot'] for e in ev for r in ('killer', 'victim') if e[r + '_slot'] is not None and e[r + '_slot'] >= 0 and not lookup(ros, e[r + '_slot'], e['time']))
-    # a slot whose first known name only shows up after an event that used the slot, and that name held ANOTHER slot earlier (the player rejoined into this
-    # slot): the earlier occupant of this slot is unknown, not that name
-    _first = {}
-    for sl_, v_ in ros.items():
-        for x_ in v_:
-            if x_[2] and (x_[2] not in _first or x_[0] < _first[x_[2]][0]): _first[x_[2]] = (x_[0], sl_)
-    early = set()
-    for e in ev:
-        for r in ('killer', 'victim'):
-            s_ = e[r + '_slot']
-            if s_ is None or s_ < 0 or not ros.get(s_) or not ros[s_][0][2] or ros[s_][0][0] <= e['time'] + 5: continue
-            nm_ = ros[s_][0][2]
-            if any(x[2] == nm_ and x[0] < ros[s_][0][0] - 1 for sl_, v_ in ros.items() if sl_ != s_ for x in v_): early.add(s_)
-    need |= early
-    if need and flow_items is None:
-        _i, _pk = read_pcapng(a.pcap); _k, _f = find_server_flow(_pk, a.port); flow_items = [(ts - _f[0][0], pl) for ts, pl in _f]
-    if need and flow_items:
-        from .roster import fill_roster
-        fill_roster(ros, flow_items, need, since=_since, early=early)
-        ev, ls = decode(recs, None, me, items, namer)
-    for e in ev:
-        if e['killer_agent'] is not None and e['killer_agent'] < 0: e['killer'] = '(world)'
-    progress('rounds', 0.0)
-    from .rounds import detect, round_of
-    def rkind(rs, t):
-        n = round_of(rs, t)
-        return next((r.get('kind', '') for r in rs if r['n'] == n), '')
-    rounds = detect(recs)
-    wt = sorted(e['time'] for e in ev if e['killer_agent'] is not None and e['killer_agent'] < 0)
-    burst_t = set(t for t in wt if sum(1 for u in wt if abs(u - t) <= 10) >= 3)
-    out = a.out or os.path.splitext(a.pcap)[0] + '_kills.csv'
-    with open(os.path.splitext(out)[0].replace('_kills', '') + '_rounds.csv', 'w', newline='', encoding='utf-8-sig') as f:
-        w = csv.writer(f); w.writerow(['round', 'start_s', 'end_s', 'length_s', 'started_by', 'tickets_zero_at_s', 'tickets_zero_team', 'kills_after_tickets_zero', 'kind', 'death_msgs', 'method', 'review'])
-        # death_msgs = rows of the kills file in that round (one per death). The raw message count is not used: the server sends every death
-        # once per recipient and each recording catches a different number of those copies, so raw counts differ between recordings.
-        nrows = collections.Counter(round_of(rounds, e['time']) for e in ev)
-        for r in rounds: w.writerow([r['n'], round(r['start']), round(r['end']), round(r['end'] - r['start']), r['signals'], r['tickets_zero'][0] if r['tickets_zero'] else '', r['tickets_zero'][1] if r['tickets_zero'] else '', r.get('kills_after_zero', ''), r.get('kind', ''), nrows.get(r['n'], 0), r['method'], r['review']])
-    # --- flagbearers (separate file): who spawned carrying a flag, per round
-    from . import flags
-    fb_path = os.path.splitext(out)[0].replace('_kills', '') + '_flagbearers.csv'
-    kind = flags.server_kind(recs)
-    ftab = flags.load_table(here, kind)
-    if ftab:
-        fb = flags.flagbearers(recs, ftab, rounds, round_of, rkind, namer)
-        with open(fb_path, 'w', newline='', encoding='utf-8-sig') as f:
-            w = csv.writer(f); w.writerow(['round', 'round_kind', 'player', 'player_slot', 'class', 'flag', 'spawns', 'first_spawn_s', 'first_spawn_mm:ss', 'last_spawn_s', 'review'])
-            for r in fb: w.writerow(r[:7] + [r[7], '%d:%02d' % divmod(int(r[7]), 60), r[8], r[9]])
-        log('%d flagbearer rows -> %s' % (len(fb), fb_path))
-    else:
-        log('flagbearers: skipped (no troop/item table for this server type)')
-        if os.path.exists(fb_path): os.remove(fb_path)      # a leftover from an earlier run must not be shown as this run's result
-    # admin actions announced by the server ("X Slayed Player Y.", "X Slayed Everyone.", "X Swapped Everyone to Spectators"): the deaths they cause are labelled
-    # and left out of kills, deaths and teamkills (the scoreboard check below still sees the -1 an admin slay gives)
-    from .events import admin_lines
-    adm = admin_lines(recs)
-    for e in ev:
-        e['admin'] = None
-        selfd = e['killer_agent'] is not None and e['killer_agent'] == e['victim_agent']
-        world = e['killer_agent'] is not None and e['killer_agent'] < 0
-        for t_, kind, who_, tg in adm:
-            if not (t_ - 2.5 <= e['time'] <= t_ + 1.5): continue
-            if kind == 'slay' and selfd and e['victim'] == tg and not e['victim_slot'] is None and e['victim_slot'] >= 0: e['admin'] = 'admin slay'
-            elif kind == 'slay_all' and (selfd or world): e['admin'] = 'admin: slayed everyone'
-            elif kind == 'swap_all' and world: e['admin'] = 'admin: swapped everyone to spectators'
-            if e['admin']: break
-    # a no-blow death (mount / AI unit) whose owner was never seen is labelled as such instead of '?': the label reads the same in every recording
-    for e in ev:
-        if e['victim'] == '?' and death_type(e, e['time'] in burst_t).startswith('no-blow death'): e['victim'] = '(AI/mount, owner unknown)'
-        if e['killer'] == '?' and e['killer_slot'] is None and 'horse charge' in e['weapon']: e['killer'] = '(AI/mount, owner unknown)'      # a charging horse whose owner was never seen
-    known = set(WCODE)
-    with open(out, 'w', newline='', encoding='utf-8-sig') as f:
-        w = csv.writer(f); w.writerow(['round', 'round_kind', 'time_s', 'mm:ss', 'killer', 'victim', 'weapon', 'teamkill', 'death_type', 'respawn_s', 'review', 'killer_slot', 'victim_slot'])
-        for e in ev:
-            flags = []
-            if e['killer'] == '?' and e['time'] < 90: flags.append('before-sync')
-            elif not isinstance(e['killer'], str) or e['killer'].startswith(('?', 'player#')): flags.append('killer?')
-            if e['victim'] == '?' and e['time'] < 90: flags.append('before-sync')
-            elif not isinstance(e['victim'], str) or e['victim'].startswith(('?', 'player#')): flags.append('victim?')
-            # a score read against a baseline from an earlier round proves nothing: the scoreboard starts the round at 0, and that reset is not sent
-            if e.get('tk_check') and not (e.get('dl_base_t') is not None and any(r['n'] == round_of(rounds, e['time']) and e['dl_base_t'] < r['start'] for r in rounds)): flags.append('teamkill?(score disagrees)')      # the teams say one thing, the killer's score change the other
-            if e.get('runaway'): flags.append('runaway-horse')      # the horse had no rider (link message), no kill credit
-            if e.get('burst'): flags.append('teamkill?(burst)')      # several kills at once: the number of teamkills is exact, which of them is a guess
-            if e.get('late'): flags.append('name-from-later-data(%s)' % '+'.join(e['late']))
-            if e['weapon'].startswith('class ') or '(ico_' in e['weapon']: flags.append('weapon?')      # not yet seen on video (label from the exe's icon table only)
-            
-            if e['killer'] == e['victim'] and e['killer'] not in ('?', '(AI)', '(world)') and not e['admin']: flags.append('self')
-            w.writerow([round_of(rounds, e['time']), rkind(rounds, e['time']), e['time'], '%d:%02d' % divmod(int(e['time']), 60), e['killer'], e['victim'], e['weapon'], '' if e['admin'] else e['teamkill'], e['admin'] or death_type(e, e['time'] in burst_t), '' if e.get('respawn') is None else e['respawn'], ' '.join(flags), e['killer_slot'], e['victim_slot']])
-    st = collections.defaultdict(lambda: collections.Counter())
-    def bump(name, key, rn):
-        st[name][key] += 1; st[name][(rn, key)] += 1
-    for e in ev:
-        dt = death_type(e, e['time'] in burst_t)
-        rn = round_of(rounds, e['time'])
-        if e['admin'] or dt.startswith(('horse death', 'no-blow death')): continue
-        if dt == 'AI/horse death':
-            if e['killer'] not in ('?', '(AI)', '(world)'): bump(e['killer'], 'ai_kills', rn)
-            continue
-        if dt == 'kill' and not e['teamkill'] and not e.get('runaway'): bump(e['killer'], 'kills', rn)      # teamkills are counted separately, not as kills
-        bump(e['victim'], 'deaths', rn)
-        if e['teamkill']: bump(e['killer'], 'teamkills', rn)
-    progress('players', 0.0)
-    sp = os.path.splitext(out)[0] + '_players.csv'
-    # --- scoreboard check: the server sends every player's current score (kills - teamkills) when you connect and on every change.
-    sb = collections.defaultdict(list)                       # slot -> [(t, score)]
-    for r in recs:
-        tl = r.get('tail')
-        if not tl or r['L'] - tl['end'] >= 8 or r.get('err'): continue      # only packets whose tail parsed to the end: the large map-change blocks give garbage scores
-        for p_, pr, v in tl['players']:
-            if pr == 0 and 0 <= p_ < 250:
-                sc = v - 8192 if v >= 4096 else v
-                if abs(sc) <= 150 and (not sb[p_] or sb[p_][-1][1] != sc): sb[p_].append((r['t'], sc))
-    gap = collections.defaultdict(int); gapn = collections.Counter()     # (name, round) -> scoreboard change minus recorded net
-    sc0 = {}; sc1 = {}
-    BASE = 6.0       # the scoreboard reset lands a few seconds after the detected round start
-    byslot = collections.defaultdict(list)
-    for e in ev:
-        if e['killer_agent'] is not None and e['killer_agent'] < 0 and e['victim_slot'] is not None and e['victim_slot'] >= 0 and not e.get('admin'):
-            # a team swap (killer-less death, the player respawns) costs 1 point; leaving the server does not. A swapper who is not seen respawning
-            # within 2 minutes still shows the penalty on the scoreboard at that moment: a step of exactly -1 within a moment of the death counts too.
-            sv = sb.get(e['victim_slot'], [])
-            dropped = any(e['time'] - 0.3 <= t2 <= e['time'] + 2.5 for (t1, v1), (t2, v2) in zip(sv, sv[1:]) if v2 - v1 == -1)
-            if e['respawn'] or dropped: byslot[e['victim_slot']].append((e['time'], -1))
-    for e in ev:
-        if e['killer_slot'] is None or e['killer_slot'] < 0 or e.get('admin'): continue      # an admin slay is not a point change (the round-end slay-all was counted as a self-death worth -1)
-        dt = death_type(e, False)
-        if dt == 'kill' or (dt.startswith('self') and e['teamkill']):
-            byslot[e['killer_slot']].append((e['time'], -1 if e['teamkill'] else 1))
-    resets = sorted(r_['t'] for r_ in recs if any('Has reset the Map' in x_ for x_ in r_.get('txt') or ()))      # an admin reset zeroes the scoreboard; it can come well after the detected round start
-    for slot, ser in sb.items():
-        for r in rounds:
-            tb = r['start'] + BASE if r['start'] > 0 else ser[0][0]
-            if r['start'] > 0:
-                for rt_ in resets:
-                    if r['start'] + BASE < rt_ < r['start'] + 60: tb = max(tb, rt_ + 0.5)
-            before = [v_ for t_, v_ in ser if t_ <= tb]
-            inr = [v_ for t_, v_ in ser if tb < t_ < r['end']]
-            if r['start'] > 0:
-                if not before: continue
-                s0_ = before[-1]
-            else: s0_ = ser[0][1]
-            # the scoreboard reset (score falls to 0 for everyone) can land well after the detected start: if the score drops by 2 or more in
-            # the first 2 minutes of the round, count from the value after that drop (kills only ever add 1, a teamkill takes 1 off)
-            ser_r = [(t_, v_) for t_, v_ in ser if r['start'] < t_ < r['end']] if r['start'] > 0 else []
-            prev_ = s0_
-            for t_, v_ in ser_r:
-                if t_ > r['start'] + 120: break
-                if abs(v_ - prev_) >= 2 and -1 <= v_ <= 1 and t_ > tb:      # a reset goes to 0 (or -1 / 1 if the first event follows at once), from above or, after teamkills, from below; seen up to 64 s after a map change
-                    tb = t_; s0_ = v_; inr = [x_ for tt_, x_ in ser if tb < tt_ < r['end']]; break
-                prev_ = v_
-            # a player whose score was not re-sent after the reset (no change yet) still shows last round's value: if the first value of the round
-            # fits counting from 0 but not from that stale value, the round started from 0
-            if r['start'] > 0 and s0_ != 0 and inr:
-                t1 = next(t_ for t_, v_ in ser if t_ > tb)
-                n1 = sum(d for t_, d in byslot[slot] if tb < t_ <= t1 + 0.05)
-                if inr[0] - s0_ != n1 and inr[0] == n1: s0_ = 0
-            vals = [s0_] + inr
-            if any(abs(b_ - a_) > 15 for a_, b_ in zip(vals, vals[1:])): continue      # score reset inside the round, or a jump no kills can explain (slot reused / player rejoined)
-            nm = lookup(ros, slot, tb)
-            if not nm: continue
-            if any(tb + 5 < x[0] < r['end'] and x[2] != nm for x in ros.get(slot, [])): continue      # the slot changed hands inside this round: its score and events belong to two players
-            net = sum(d for t_, d in byslot[slot] if tb + (0.1 if r['start'] == 0 else 0) < t_ < r['end'])      # capture start: the first score we see already contains the kills of that same moment
-            gap[(nm, r['n'])] += (vals[-1] - s0_) - net; gapn[(nm, r['n'])] += 1
-            if os.environ.get('NWKEEP_GAPDEBUG') and (vals[-1] - s0_) - net: print('GAP', nm, 'R%d' % r['n'], 'slot', slot, 'start', s0_, 'end', vals[-1], 'net', net, 'gap', (vals[-1] - s0_) - net, 'events', [(round(t_, 1), d) for t_, d in sorted(byslot[slot]) if tb < t_ < r['end']])
-        nm = lookup(ros, slot, ser[0][0])
-        if nm: sc0[nm] = ser[0][1]; sc1[nm] = ser[-1][1]
-    kinds = {r['n']: r.get('kind', '') for r in rounds}
-    cols = []
-    for r in rounds:
-        lab = 'R%d' % r['n'] + ('(%s)' % r['kind'] if r.get('kind') else '')
-        cols += [((r['n'], k), '%s_%s' % (lab, k)) for k in ('kills', 'deaths', 'teamkills', 'score_gap')]
-    keep = [r['n'] for r in rounds if r.get('kind') != 'warm-up']      # overall totals leave out warm-up rounds
-    tot = lambda c, k: sum(c[(rn, k)] for rn in keep)
-    for nm in set(n for n, _ in gap) | set(st): st[nm]            # make sure every scoreboard player has a row
-    rows = list(st.items())
-    net = lambda c: tot(c, 'kills') - tot(c, 'teamkills')           # overall kills = kills minus teamkills (like the scoreboard)
-    rows.sort(key=lambda nc: -net(nc[1]))
-    with open(sp, 'w', newline='', encoding='utf-8-sig') as f:
-        w = csv.writer(f); w.writerow(['player', 'kills', 'deaths', 'teamkills', 'ai_kills', 'score_at_capture_start', 'score_at_capture_end', 'score_gap'] + [h for _, h in cols])
-        for n, c in rows:
-            gaps = [gap[(n, rn)] for rn in keep if (n, rn) in gapn]
-            row = [n, net(c), tot(c, 'deaths'), tot(c, 'teamkills'), tot(c, 'ai_kills'), sc0.get(n, ''), sc1.get(n, ''), sum(gaps) if gaps else '']
-            for (rn, k), _h in cols:
-                row.append((gap[(n, rn)] if (n, rn) in gapn else '') if k == 'score_gap' else c[(rn, k)])
-            w.writerow(row)
-    log('%d kills -> %s\nper player -> %s\ndone in %.0f s' % (len(ev), out, sp, time.time() - t))
-    progress('done', 1.0)
-    base = os.path.splitext(out)[0].replace('_kills', '')
-    return dict(kills=out, players=sp, rounds=base + '_rounds.csv', flagbearers=fb_path if os.path.exists(fb_path) else None)
+    parser = build_argument_parser()
+    arguments = parser.parse_args(argv)
+    if not arguments.pcap:
+        parser.error('give the .pcapng capture to read (or drag it onto nwkills.exe)')
+    try:
+        run(arguments)
+    except RuntimeError as error:
+        sys.exit(str(error))
 
 
 if __name__ == '__main__':
-    mp.freeze_support(); main()
+    import multiprocessing
+    multiprocessing.freeze_support()
+    main()
